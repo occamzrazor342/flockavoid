@@ -28,25 +28,34 @@ function setStatus(msg, isError = false) {
   el.className = isError ? 'status error' : 'status';
 }
 
-async function useCurrentLocation() {
+/** Returns true on success, false on failure -- callers that need to
+ * sequence "get location, then do X" (the incoming-share auto-flow) can
+ * await this and check the result instead of racing a bare callback. */
+async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a destination and tap Get Route.') {
   setStatus('Getting your location…');
   if (!navigator.geolocation) {
     setStatus('Geolocation not available in this browser.', true);
-    return;
+    return false;
   }
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      currentOrigin = {
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        name: 'Current location',
-      };
-      $('originLabel').textContent = `Origin: current location (${currentOrigin.lat.toFixed(4)}, ${currentOrigin.lon.toFixed(4)})`;
-      setStatus('Location set. Enter a destination and tap Get Route.');
-    },
-    (err) => setStatus(`Could not get location: ${err.message}`, true),
-    { enableHighAccuracy: true, timeout: 15000 }
-  );
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        currentOrigin = {
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          name: 'Current location',
+        };
+        $('originLabel').textContent = `Origin: current location (${currentOrigin.lat.toFixed(4)}, ${currentOrigin.lon.toFixed(4)})`;
+        setStatus(statusOnSuccess);
+        resolve(true);
+      },
+      (err) => {
+        setStatus(`Could not get location: ${err.message}`, true);
+        resolve(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  });
 }
 
 async function searchNominatim(query, limit = 5) {
@@ -441,3 +450,54 @@ if ('serviceWorker' in navigator) {
     // pass Chrome's stricter installability check on every device.
   });
 }
+
+/**
+ * Handles being opened via Android's Share sheet (registered as a
+ * share_target in manifest.json) -- e.g. tapping Share on a place in
+ * Google Maps and picking this app. This is the actual fix for "not smooth
+ * enough": no manual copy/paste of a link at all, just the same Share
+ * button already used for everything else. Chrome's GET-method share
+ * target appends the shared data as query params to this same page.
+ *
+ * Falls through silently if there's nothing to handle (a normal open).
+ */
+async function handleIncomingShare() {
+  const params = new URLSearchParams(location.search);
+  const sharedTitle = params.get('shared_title') || '';
+  const sharedText = params.get('shared_text') || '';
+  const sharedUrl = params.get('shared_url') || '';
+  const combined = [sharedUrl, sharedText, sharedTitle].filter(Boolean).join(' ');
+
+  if (!combined) return; // normal open, nothing shared in
+
+  // Clear the query string immediately so a page refresh/back doesn't replay it.
+  history.replaceState({}, '', location.pathname);
+
+  if (isShortenedMapsLink(combined)) {
+    setStatus(
+      'Shared a shortened link — Google/Apple sometimes send the short form even ' +
+      'through Share. Open it in Maps once, then Share again.',
+      true
+    );
+    return;
+  }
+
+  const pinned = extractLatLon(combined);
+  if (!pinned) {
+    setStatus(
+      'Received a share but couldn’t find coordinates in it. Try sharing again from ' +
+      'the place’s own page in Maps (not a search results list).',
+      true
+    );
+    return;
+  }
+
+  const name = sharedTitle || sharedText || 'Shared location';
+  selectedDestination = { lat: pinned.lat, lon: pinned.lon, name };
+  $('destination').value = name;
+
+  const gotLocation = await useCurrentLocation(`Got "${name}" — calculating route…`);
+  if (gotLocation) await getRoute();
+}
+
+handleIncomingShare();
