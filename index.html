@@ -125,9 +125,14 @@
 
     <label for="destination">Destination</label>
     <div id="destinationWrap" style="position: relative;">
-      <input type="text" id="destination" placeholder="Start typing an address, or lat,lon" autocomplete="off" />
+      <input type="text" id="destination" placeholder="Address, business name, or paste a Maps link" autocomplete="off" />
       <div id="destSuggestions" class="suggestions" hidden></div>
     </div>
+    <p class="note">For a specific business in a shared building/strip mall, free map
+      data often only has ONE point for the whole building — search doesn't reliably
+      find individual suites. Most reliable: drop the pin in Google/Apple Maps, tap
+      Share, and paste the resulting link here (not a shortened maps.app.goo.gl one —
+      open it once first if that's what you get).</p>
 
     <div class="options">
       <input type="checkbox" id="directional" checked />

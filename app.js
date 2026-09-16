@@ -104,6 +104,49 @@ async function searchSuggestions(query) {
 /** Fallback for when the user hits Get Route without picking a suggestion
  * (e.g. pasted text, or typed and pressed Enter) -- try both geocoders
  * before giving up, since either one alone can miss a real address. */
+/**
+ * Extract coordinates directly from a pasted Google/Apple Maps link or bare
+ * "lat,lon" string, bypassing geocoding entirely. This exists because of a
+ * real, confirmed limitation: free map data (OpenStreetMap, which both
+ * Nominatim and Photon are built on) frequently has only ONE point for a
+ * whole shared building/strip mall -- tagged to whichever single tenant a
+ * volunteer happened to map -- with no entry at all for other businesses in
+ * the same building, whether searched by address or by name. No amount of
+ * query normalization finds data that isn't in the dataset. The reliable
+ * fix for "I copied this from my normal map app" is to read the coordinates
+ * already embedded in what was copied, since those apps pinpoint the exact
+ * spot regardless of what OSM/Census happen to have indexed.
+ *
+ * Handles:
+ *   - a bare "lat,lon" string
+ *   - Google Maps: .../@lat,lon,<zoom>z/...  or  ?q=lat,lon  or  &q=lat,lon
+ *   - Apple Maps:  ?ll=lat,lon  or  &ll=lat,lon
+ *
+ * Does NOT resolve shortened links (maps.app.goo.gl, goo.gl/maps) -- those
+ * redirect server-side with no CORS exposure, so a browser can't follow them
+ * to the real URL. If a shortlink is pasted, tell the user to open it once
+ * and paste the resulting full URL instead.
+ */
+function extractLatLon(text) {
+  const bare = text.match(/^\s*(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/);
+  if (bare) return { lat: parseFloat(bare[1]), lon: parseFloat(bare[2]) };
+
+  const atSign = text.match(/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+),/);
+  if (atSign) return { lat: parseFloat(atSign[1]), lon: parseFloat(atSign[2]) };
+
+  const qParam = text.match(/[?&]q=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/);
+  if (qParam) return { lat: parseFloat(qParam[1]), lon: parseFloat(qParam[2]) };
+
+  const llParam = text.match(/[?&]ll=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/);
+  if (llParam) return { lat: parseFloat(llParam[1]), lon: parseFloat(llParam[2]) };
+
+  return null;
+}
+
+function isShortenedMapsLink(text) {
+  return /(maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(text);
+}
+
 async function geocode(address) {
   const nominatimResults = await searchNominatim(address, 1).catch(() => []);
   if (nominatimResults.length) return { ...nominatimResults[0], name: address };
@@ -233,15 +276,24 @@ async function getRoute() {
     return;
   }
 
+  if (isShortenedMapsLink(destInput)) {
+    setStatus(
+      'Shortened Maps links (maps.app.goo.gl / goo.gl/maps) can’t be read directly — ' +
+      'open it once and paste the resulting full URL instead.',
+      true
+    );
+    return;
+  }
+
   $('getRouteBtn').disabled = true;
   $('results').hidden = true;
   setStatus('Geocoding destination…');
 
   try {
     let destination;
-    if (/^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(destInput)) {
-      const [lat, lon] = destInput.split(',').map((s) => parseFloat(s.trim()));
-      destination = { lat, lon, name: destInput };
+    const pinned = extractLatLon(destInput);
+    if (pinned) {
+      destination = { ...pinned, name: destInput };
     } else if (selectedDestination && selectedDestination.name === destInput) {
       // Picked from the autocomplete dropdown -- already has exact coordinates,
       // no need to re-geocode (and re-geocoding the display_name string back
@@ -334,6 +386,24 @@ function onDestinationInput() {
   selectedDestination = null; // any manual edit invalidates a previously picked suggestion
   const query = $('destination').value.trim();
   clearTimeout(autocompleteTimer);
+
+  if (isShortenedMapsLink(query)) {
+    renderSuggestions([]);
+    setStatus(
+      'That’s a shortened link — open it once (it’ll redirect in your browser) and paste the resulting full URL here instead.',
+      true
+    );
+    return;
+  }
+
+  const pinned = extractLatLon(query);
+  if (pinned) {
+    selectedDestination = { ...pinned, name: query };
+    renderSuggestions([]);
+    setStatus(`Pinned exact location from link: ${pinned.lat.toFixed(5)}, ${pinned.lon.toFixed(5)}`);
+    return;
+  }
+
   if (query.length < AUTOCOMPLETE_MIN_CHARS) {
     renderSuggestions([]);
     return;
