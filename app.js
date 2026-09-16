@@ -10,12 +10,17 @@
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const PHOTON_URL = 'https://photon.komoot.io/api/';
 const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
+const AUTOCOMPLETE_DEBOUNCE_MS = 400;
+const AUTOCOMPLETE_MIN_CHARS = 3;
 
 const $ = (id) => document.getElementById(id);
 
 let currentOrigin = null;
 let lastResult = null;
+let selectedDestination = null; // set when the user picks a suggestion; cleared on manual edits
+let autocompleteTimer = null;
 
 function setStatus(msg, isError = false) {
   const el = $('status');
@@ -44,15 +49,74 @@ async function useCurrentLocation() {
   );
 }
 
-async function geocode(address) {
-  const params = new URLSearchParams({ q: address, format: 'json', limit: '1' });
-  const resp = await fetch(`${NOMINATIM_URL}?${params}`, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!resp.ok) throw new Error(`Geocoding failed (${resp.status})`);
+async function searchNominatim(query, limit = 5) {
+  const params = new URLSearchParams({ q: query, format: 'json', limit: String(limit) });
+  const resp = await fetch(`${NOMINATIM_URL}?${params}`, { headers: { Accept: 'application/json' } });
+  if (!resp.ok) return [];
   const results = await resp.json();
-  if (!results.length) throw new Error(`Could not find address: ${address}`);
-  return { lat: parseFloat(results[0].lat), lon: parseFloat(results[0].lon), name: address };
+  return results.map((r) => ({
+    lat: parseFloat(r.lat),
+    lon: parseFloat(r.lon),
+    name: r.display_name,
+  }));
+}
+
+async function searchPhoton(query, limit = 5) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  const resp = await fetch(`${PHOTON_URL}?${params}`);
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  return (data.features || []).map((f) => {
+    const p = f.properties;
+    const parts = [p.name, p.housenumber && p.street ? `${p.housenumber} ${p.street}` : p.street, p.city, p.state, p.country]
+      .filter(Boolean);
+    return {
+      lat: f.geometry.coordinates[1],
+      lon: f.geometry.coordinates[0],
+      name: parts.length ? parts.join(', ') : query,
+    };
+  });
+}
+
+/** Live suggestions for the autocomplete dropdown -- Nominatim first, Photon
+ * merged in too, since they index things differently (this address search
+ * problem is exactly why: Nominatim matches strict OSM road-name tagging,
+ * e.g. "US 183" not "N Hwy 183"/"N Highway 183", with no abbreviation
+ * tolerance, and Photon sometimes finds what Nominatim misses or vice
+ * versa). Letting the user pick from what's actually indexed sidesteps
+ * needing to guess address-normalization rules entirely. */
+async function searchSuggestions(query) {
+  const [nominatimResults, photonResults] = await Promise.all([
+    searchNominatim(query).catch(() => []),
+    searchPhoton(query).catch(() => []),
+  ]);
+  const seen = new Set();
+  const combined = [];
+  for (const r of [...nominatimResults, ...photonResults]) {
+    const key = `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(r);
+  }
+  return combined.slice(0, 6);
+}
+
+/** Fallback for when the user hits Get Route without picking a suggestion
+ * (e.g. pasted text, or typed and pressed Enter) -- try both geocoders
+ * before giving up, since either one alone can miss a real address. */
+async function geocode(address) {
+  const nominatimResults = await searchNominatim(address, 1).catch(() => []);
+  if (nominatimResults.length) return { ...nominatimResults[0], name: address };
+
+  const photonResults = await searchPhoton(address, 1).catch(() => []);
+  if (photonResults.length) return { ...photonResults[0], name: address };
+
+  throw new Error(
+    `Could not find "${address}" in either geocoder. Try: dropping the unit/suite ` +
+    `number, using the highway's official name (e.g. "US 183" instead of "Hwy 183"), ` +
+    `picking from the suggestion dropdown as you type instead of typing the full ` +
+    `address and pressing Get Route directly, or entering coordinates as "lat,lon".`
+  );
 }
 
 async function calculateRoute(origin, destination, cameraDistanceMeters, directional) {
@@ -174,12 +238,18 @@ async function getRoute() {
   setStatus('Geocoding destination…');
 
   try {
-    const destination = /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(destInput)
-      ? (() => {
-          const [lat, lon] = destInput.split(',').map((s) => parseFloat(s.trim()));
-          return { lat, lon, name: destInput };
-        })()
-      : await geocode(destInput);
+    let destination;
+    if (/^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(destInput)) {
+      const [lat, lon] = destInput.split(',').map((s) => parseFloat(s.trim()));
+      destination = { lat, lon, name: destInput };
+    } else if (selectedDestination && selectedDestination.name === destInput) {
+      // Picked from the autocomplete dropdown -- already has exact coordinates,
+      // no need to re-geocode (and re-geocoding the display_name string back
+      // through Nominatim isn't guaranteed to round-trip to the same result).
+      destination = selectedDestination;
+    } else {
+      destination = await geocode(destInput);
+    }
 
     setStatus('Calculating camera-avoidance route…');
     const cameraDistance = parseInt($('cameraDistance').value, 10) || 150;
@@ -237,9 +307,55 @@ async function shareToOsmAnd() {
   }
 }
 
+function renderSuggestions(suggestions) {
+  const box = $('destSuggestions');
+  box.innerHTML = '';
+  if (!suggestions.length) {
+    box.hidden = true;
+    return;
+  }
+  for (const s of suggestions) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'suggestion-item';
+    item.textContent = s.name;
+    item.addEventListener('click', () => {
+      selectedDestination = s;
+      $('destination').value = s.name;
+      box.hidden = true;
+      box.innerHTML = '';
+    });
+    box.appendChild(item);
+  }
+  box.hidden = false;
+}
+
+function onDestinationInput() {
+  selectedDestination = null; // any manual edit invalidates a previously picked suggestion
+  const query = $('destination').value.trim();
+  clearTimeout(autocompleteTimer);
+  if (query.length < AUTOCOMPLETE_MIN_CHARS) {
+    renderSuggestions([]);
+    return;
+  }
+  autocompleteTimer = setTimeout(async () => {
+    try {
+      const suggestions = await searchSuggestions(query);
+      // Only render if the input hasn't changed since this search started.
+      if ($('destination').value.trim() === query) renderSuggestions(suggestions);
+    } catch {
+      renderSuggestions([]);
+    }
+  }, AUTOCOMPLETE_DEBOUNCE_MS);
+}
+
 $('useLocationBtn').addEventListener('click', useCurrentLocation);
 $('getRouteBtn').addEventListener('click', getRoute);
 $('shareOsmAndBtn').addEventListener('click', shareToOsmAnd);
+$('destination').addEventListener('input', onDestinationInput);
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#destinationWrap')) $('destSuggestions').hidden = true;
+});
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {

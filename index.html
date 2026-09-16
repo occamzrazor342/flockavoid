@@ -82,6 +82,36 @@
     margin-top: 8px;
   }
   .note { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+  .suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    background: #14141f;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    max-height: 220px;
+    overflow-y: auto;
+    margin-top: -12px;
+  }
+  .suggestion-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 0.85rem;
+    margin: 0;
+    border-radius: 0;
+    cursor: pointer;
+  }
+  .suggestion-item:last-child { border-bottom: none; }
+  .suggestion-item:hover, .suggestion-item:active { background: #1e1e30; }
 </style>
 </head>
 <body>
@@ -94,7 +124,10 @@
     <div id="originLabel">Origin not set yet.</div>
 
     <label for="destination">Destination</label>
-    <input type="text" id="destination" placeholder="Address, or lat,lon" />
+    <div id="destinationWrap" style="position: relative;">
+      <input type="text" id="destination" placeholder="Start typing an address, or lat,lon" autocomplete="off" />
+      <div id="destSuggestions" class="suggestions" hidden></div>
+    </div>
 
     <div class="options">
       <input type="checkbox" id="directional" checked />
