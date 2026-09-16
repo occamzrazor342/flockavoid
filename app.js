@@ -134,6 +134,14 @@ function extractLatLon(text) {
   const atSign = text.match(/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+),/);
   if (atSign) return { lat: parseFloat(atSign[1]), lon: parseFloat(atSign[2]) };
 
+  // Google Maps "place" share links encode the actual pinned point as
+  // !3d<lat>!4d<lon> inside the data= parameter -- distinct from (and more
+  // precise than) the @lat,lon,zoom viewport-center format above, which is
+  // what a *specific business* share link (the real-world common case)
+  // actually uses. Confirmed directly against a real shortlink redirect.
+  const place3d4d = text.match(/!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/);
+  if (place3d4d) return { lat: parseFloat(place3d4d[1]), lon: parseFloat(place3d4d[2]) };
+
   const qParam = text.match(/[?&]q=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/);
   if (qParam) return { lat: parseFloat(qParam[1]), lon: parseFloat(qParam[2]) };
 
