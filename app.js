@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.3';
+const BUILD_ID = '2026-09-17.4';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -131,11 +131,30 @@ async function getGooglePlaceDetails(placeId) {
   };
 }
 
-/** One-shot geocode for the "typed/pasted and hit Get Route directly"
- * path -- Text Search rather than Autocomplete, since it returns a
+function haversineKm(a, b) {
+  const R = 6371;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** One-shot geocode for the "typed/pasted and hit Get Route directly" path
+ * (and the Share-to-app auto-flow, which never shows the user a dropdown to
+ * pick from) -- Text Search rather than Autocomplete, since it returns a
  * location inline for a complete query with no separate details call
  * needed. Same currentOrigin bias as searchGoogleAutocomplete, for the
- * same reason. */
+ * same reason -- but bias alone isn't enough, confirmed live: a real query
+ * for "O'Reilly Auto Parts" with locationBias set returned the correct
+ * 3.82km-away store *behind* a 4.22km-away one, because Google's Text
+ * Search ranks by a blend of distance and its own relevance/prominence
+ * score even inside the biased region, not strict nearest-first. geocode()
+ * just takes result [0], so this re-sorts by actual straight-line distance
+ * to currentOrigin ourselves before returning -- guaranteed nearest-first,
+ * not dependent on Google's undocumented ranking blend. */
 async function searchGoogleTextSearch(query) {
   const body = { textQuery: query };
   if (currentOrigin) {
@@ -154,11 +173,15 @@ async function searchGoogleTextSearch(query) {
   });
   if (!resp.ok) return [];
   const data = await resp.json();
-  return (data.places || []).map((p) => ({
+  const results = (data.places || []).map((p) => ({
     lat: p.location.latitude,
     lon: p.location.longitude,
     name: p.formattedAddress || p.displayName?.text || query,
   }));
+  if (currentOrigin) {
+    results.sort((a, b) => haversineKm(currentOrigin, a) - haversineKm(currentOrigin, b));
+  }
+  return results;
 }
 
 async function searchNominatim(query, limit = 5) {
