@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.4';
+const BUILD_ID = '2026-09-17.5';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -438,10 +438,17 @@ function googleMapsUrl(origin, destination, geometry) {
  * two of them, so it should track the real avoidance route closely, but
  * "should closely track" isn't "guaranteed identical" -- unlike the
  * downloaded GPX, which OsmAnd follows exactly because it's a real
- * recorded track, not a routing request. OSMAND_MAX_VIA_POINTS is
- * generous (no hard limit found in OsmAnd's own parser) but still
- * downsampled to keep the URL a sane length. */
-const OSMAND_MAX_VIA_POINTS = 200;
+ * recorded track, not a routing request.
+ *
+ * OSMAND_MAX_VIA_POINTS was originally 200 (no hard count limit found in
+ * OsmAnd's own parser) -- confirmed live this was a real mistake, not just
+ * an unused allowance: OsmAnd renders every single via point as its own
+ * numbered stop marker on the map, so 200 of them produces dozens of
+ * overlapping numbered flags along the route, not a clean line. Cut
+ * drastically to match the Google Maps link's own cap -- same visual
+ * result either way (a small, readable set of stops), same fidelity
+ * tradeoff already disclosed above. */
+const OSMAND_MAX_VIA_POINTS = 8;
 
 function osmandNavigateUrl(origin, destination, geometry) {
   const interior = geometry.length > 2 ? geometry.slice(1, -1) : [];

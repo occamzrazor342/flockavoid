@@ -153,12 +153,8 @@
       <button type="button" class="clear-btn" id="destClear" aria-label="Clear destination" hidden>×</button>
       <div id="destSuggestions" class="suggestions" hidden></div>
     </div>
-    <p class="note">For a specific business in a shared building/strip mall, free map
-      data often only has ONE point for the whole building — search doesn't reliably
-      find individual suites. Most reliable: in Google/Apple Maps, <strong>long-press the
-      exact spot on the map</strong> to drop a pin (not a search result) — this shows raw
-      coordinates in the search bar, with no Share button or shortened link involved.
-      Copy those coordinates and paste them here.</p>
+    <p class="note">Can't find a specific unit in a shared building? Long-press its exact
+      spot on the map in Google/Apple Maps and paste the coordinates instead.</p>
 
     <div class="options">
       <input type="checkbox" id="directional" checked />
@@ -177,11 +173,10 @@
     <div class="stat-row"><span>Extra time</span><span id="statTime"></span></div>
 
     <button class="primary" id="navigateOsmAndBtn" style="margin-top: 14px;">🧭 Navigate in OsmAnd</button>
-    <p class="note">No file, no download — opens straight into OsmAnd's turn-by-turn screen. Closely follows the camera-avoidance route, but OsmAnd's own engine fills in the road between waypoints, so on a long detour it could occasionally choose differently than the exact computed path.</p>
+    <p class="note">No download — opens straight into turn-by-turn. May approximate on a long detour.</p>
     <button class="secondary" id="downloadOsmAndBtn">⬇️ Or download the exact route</button>
-    <p class="note">Guarantees the literal computed path (no re-routing gaps) at the cost of one extra step: downloads a file — tap the download notification, choose Open, then pick OsmAnd.</p>
+    <p class="note">Guarantees the exact path. Downloads a file — tap it, choose Open, then OsmAnd.</p>
     <a class="gmaps-link" id="gmapsLink" href="#" target="_blank" rel="noopener">Open approximate route in Google Maps</a>
-    <p class="note">Same waypoint-approximation tradeoff as the OsmAnd button above, via Google's own engine instead.</p>
   </div>
 
   <p class="note" id="buildId"></p>
@@ -191,6 +186,6 @@
        makes this a genuinely different URL, so it can't be served stale by
        any cache layer (browser HTTP cache, CDN, a not-yet-updated service
        worker) regardless of what any of them think its freshness is. -->
-  <script src="./app.js?v=9"></script>
+  <script src="./app.js?v=10"></script>
 </body>
 </html>
