@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.7';
+const BUILD_ID = '2026-09-17.8';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -133,11 +133,20 @@ async function searchGoogleTextSearch(query) {
   });
   if (!resp.ok) return [];
   const data = await resp.json();
-  const results = (data.places || []).map((p) => ({
-    lat: p.location.latitude,
-    lon: p.location.longitude,
-    name: p.formattedAddress || p.displayName?.text || query,
-  }));
+  const results = (data.places || []).map((p) => {
+    // Real bug, confirmed live: this used to show formattedAddress *before*
+    // displayName, so a business name Google actually returned (verified
+    // directly -- searching "Ganriela" correctly fuzzy-matched "Gabriela's
+    // South Austin" etc.) got silently thrown away in favor of a bare
+    // street address, defeating the entire point of a business-name
+    // search. displayName now comes first, with the address appended for
+    // context (matching what the old Autocomplete suggestions used to
+    // show combined).
+    const name = p.displayName?.text
+      ? p.formattedAddress ? `${p.displayName.text}, ${p.formattedAddress}` : p.displayName.text
+      : p.formattedAddress || query;
+    return { lat: p.location.latitude, lon: p.location.longitude, name };
+  });
   if (currentOrigin) {
     results.sort((a, b) => haversineKm(currentOrigin, a) - haversineKm(currentOrigin, b));
   }
