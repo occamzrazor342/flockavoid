@@ -448,36 +448,72 @@ async function getRoute() {
   }
 }
 
-async function shareToOsmAnd() {
+/** Uploads the current route's GPX to the bridge worker and returns its
+ * public URL. Shared by both OsmAnd hand-off paths below. */
+async function uploadGPX(gpxContent) {
+  const uploadResp = await fetch(`${BRIDGE_WORKER_URL}/gpx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/gpx+xml' },
+    body: gpxContent,
+  });
+  if (!uploadResp.ok) throw new Error(`Upload failed (${uploadResp.status})`);
+  const { url } = await uploadResp.json();
+  return url;
+}
+
+/** Primary path: OsmAnd registers a real Android deep link for exactly
+ * this case -- osmand.net/open-gpx?url=<gpx-url> -- confirmed directly in
+ * OsmAnd's own source (IntentHelper.parseOpenGpxIntent, osmandapp/OsmAnd
+ * on GitHub): Android's app-link routing hands the URL straight to OsmAnd
+ * (the request never actually reaches osmand.net's server -- the OS
+ * intercepts it purely from the installed app's manifest before any
+ * network call happens), and OsmAnd downloads and imports the GPX
+ * itself. No visible file lands in Downloads, no notification-tray detour
+ * -- confirmed as the real fix for "having to download and save a file
+ * every time" being a bad ask.
+ *
+ * One honest limitation, also read directly from that same source: this
+ * handler only downloads + imports the track (into My Places -> Tracks)
+ * and shows a toast -- it does not auto-start navigation the way opening
+ * a local GPX file directly can. Worth it for skipping the file-download
+ * dance, but expect one extra "open the track, tap Navigate" step.
+ */
+async function openInOsmAnd() {
   if (!lastResult) return;
   const { origin, destination, avoidance, improvement } = lastResult;
-  const name = `Camera-avoidance: ${origin.name} to ${destination.name}`;
+  const name = `Camera-avoidance ${origin.name} to ${destination.name}`;
   const description = `${improvement.camerasAvoided} cameras avoided vs. the normal route`;
   const gpxContent = generateGPX(avoidance, name, description);
 
-  // Chrome's Web Share API only allows a fixed allowlist of common file
-  // types (image/audio/video/PDF/plain text) -- confirmed .gpx is not on
-  // it. Hosting the GPX at a URL sidesteps that, but sharing that *URL*
-  // via navigator.share() turned out to be the wrong fix too -- confirmed
-  // on a real device: OsmAnd doesn't treat a shared link as something to
-  // fetch and import, it just runs its default "search this text" on the
-  // URL string, landing on a nonsense place search.
-  //
-  // What actually works is the same mechanism as opening a GPX email
-  // attachment: navigate straight to the file so Chrome downloads it
-  // (the worker sends Content-Disposition: attachment for exactly this),
-  // then tap the resulting "Download complete" notification's Open
-  // action, which fires a real VIEW intent with the application/gpx+xml
-  // MIME type -- the one OsmAnd's manifest is actually registered for.
   try {
     setStatus('Uploading route…');
-    const uploadResp = await fetch(`${BRIDGE_WORKER_URL}/gpx`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/gpx+xml' },
-      body: gpxContent,
-    });
-    if (!uploadResp.ok) throw new Error(`Upload failed (${uploadResp.status})`);
-    const { url: gpxUrl } = await uploadResp.json();
+    const gpxUrl = await uploadGPX(gpxContent);
+    const openGpxUrl = `https://osmand.net/open-gpx?url=${encodeURIComponent(gpxUrl)}&name=${encodeURIComponent(name)}`;
+    window.location.href = openGpxUrl;
+    setStatus('Opening in OsmAnd… once it’s imported, open My Places → Tracks and tap Navigate.');
+  } catch (err) {
+    setStatus(`Could not open the route in OsmAnd: ${err.message}`, true);
+  }
+}
+
+/** Fallback path, kept for when the deep link above doesn't route to
+ * OsmAnd on a given device/browser (e.g. OsmAnd not installed, or the
+ * link just loads osmand.net's real page instead of being intercepted).
+ * Confirmed working previously: force a real download (Content-Disposition:
+ * attachment) so Android's "download complete -> Open" notification fires
+ * a VIEW intent with the application/gpx+xml MIME type OsmAnd's manifest
+ * is registered for -- the same mechanism as opening a GPX email
+ * attachment. */
+async function downloadForOsmAnd() {
+  if (!lastResult) return;
+  const { origin, destination, avoidance, improvement } = lastResult;
+  const name = `Camera-avoidance ${origin.name} to ${destination.name}`;
+  const description = `${improvement.camerasAvoided} cameras avoided vs. the normal route`;
+  const gpxContent = generateGPX(avoidance, name, description);
+
+  try {
+    setStatus('Uploading route…');
+    const gpxUrl = await uploadGPX(gpxContent);
 
     const link = document.createElement('a');
     link.href = gpxUrl;
@@ -572,7 +608,8 @@ function onDestinationInput() {
 
 $('useLocationBtn').addEventListener('click', () => useCurrentLocation());
 $('getRouteBtn').addEventListener('click', getRoute);
-$('shareOsmAndBtn').addEventListener('click', shareToOsmAnd);
+$('shareOsmAndBtn').addEventListener('click', openInOsmAnd);
+$('downloadOsmAndBtn').addEventListener('click', downloadForOsmAnd);
 $('destination').addEventListener('input', onDestinationInput);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#destinationWrap')) $('destSuggestions').hidden = true;
