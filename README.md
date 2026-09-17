@@ -14,12 +14,15 @@ runs like a real app.
    tradeoff (cameras avoided vs. extra time/distance) before you commit to it.
 2. Hands the exact computed route to [OsmAnd](https://osmand.net) for real turn-by-turn
    navigation, which is what actually shows up on your car's screen (Android Auto or
-   CarPlay — OsmAnd supports both, paid tier). "Open in OsmAnd" uses OsmAnd's own
-   `osmand.net/open-gpx` deep link (confirmed directly in OsmAnd's source) to import the
-   route with no file ever landing in your Downloads folder — open the imported track in
-   My Places → Tracks and tap Navigate. If that doesn't hand off to OsmAnd on your device,
-   the fallback button downloads a `.gpx` file instead (the same mechanism as opening a
-   GPX email attachment) — tap the download notification, choose Open, then pick OsmAnd.
+   CarPlay — OsmAnd supports both, paid tier). "Navigate in OsmAnd" downloads the route
+   and opens it straight into active turn-by-turn navigation (the same mechanism as
+   opening a GPX email attachment) — tap the download notification, choose Open, then
+   pick OsmAnd if asked. There's a second, smaller "import the track" button too, using
+   OsmAnd's own `osmand.net/open-gpx` deep link (confirmed directly in OsmAnd's source) to
+   add the route to My Places → Tracks with no file ever landing in your Downloads folder
+   — but it only imports, it doesn't start navigation, so you'd have to find the track and
+   tap Navigate yourself. Skip that one unless you specifically want to save a route for
+   later rather than drive it now.
 3. Separately, install the official [DeFlock app](https://deflock.org/app) for live
    background proximity alerts as you drive, regardless of which nav app is open.
 

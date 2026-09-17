@@ -112,6 +112,24 @@
   }
   .suggestion-item:last-child { border-bottom: none; }
   .suggestion-item:hover, .suggestion-item:active { background: #1e1e30; }
+  .input-wrap input[type="text"] { padding-right: 40px; }
+  .clear-btn {
+    position: absolute;
+    right: 4px;
+    top: 6px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .clear-btn:hover, .clear-btn:active { color: var(--text); }
+  #buildId { text-align: center; opacity: 0.4; margin-top: 24px; }
 </style>
 </head>
 <body>
@@ -121,16 +139,18 @@
 
   <div class="card">
     <label for="origin">Origin</label>
-    <div id="originWrap" style="position: relative;">
+    <div id="originWrap" class="input-wrap" style="position: relative;">
       <input type="text" id="origin" placeholder="Address, business name, or paste a Maps link" autocomplete="off" />
+      <button type="button" class="clear-btn" id="originClear" aria-label="Clear origin" hidden>×</button>
       <div id="originSuggestions" class="suggestions" hidden></div>
     </div>
     <button class="secondary" id="useLocationBtn">📍 Or use current location</button>
     <div id="originLabel">Origin not set yet.</div>
 
     <label for="destination">Destination</label>
-    <div id="destinationWrap" style="position: relative;">
+    <div id="destinationWrap" class="input-wrap" style="position: relative;">
       <input type="text" id="destination" placeholder="Address, business name, or paste a Maps link" autocomplete="off" />
+      <button type="button" class="clear-btn" id="destClear" aria-label="Clear destination" hidden>×</button>
       <div id="destSuggestions" class="suggestions" hidden></div>
     </div>
     <p class="note">For a specific business in a shared building/strip mall, free map
@@ -156,19 +176,21 @@
     <div class="stat-row"><span>Extra distance</span><span id="statDistance"></span></div>
     <div class="stat-row"><span>Extra time</span><span id="statTime"></span></div>
 
-    <button class="primary" id="shareOsmAndBtn" style="margin-top: 14px;">🗺️ Open in OsmAnd (exact route)</button>
-    <p class="note">Imports the route straight into OsmAnd's My Places → Tracks — no file to download. Once it's imported, open it there and tap Navigate.</p>
-    <button class="secondary" id="downloadOsmAndBtn">⬇️ Or download the .gpx instead</button>
-    <p class="note">Fallback if the button above doesn't hand off to OsmAnd on your device. Downloads a file — tap the download notification, choose Open, then pick OsmAnd.</p>
+    <button class="primary" id="downloadOsmAndBtn" style="margin-top: 14px;">⬇️ Navigate in OsmAnd (exact route)</button>
+    <p class="note">Downloads the route and opens it straight into turn-by-turn navigation. Check your notifications, tap the download, choose Open, then pick OsmAnd if asked.</p>
+    <button class="secondary" id="shareOsmAndBtn">🗺️ Or just import the track</button>
+    <p class="note">Adds the route to OsmAnd's My Places → Tracks without starting navigation — useful for saving a route for later, but you'll need to find it there yourself and tap Navigate. Skip this one unless that's specifically what you want.</p>
     <a class="gmaps-link" id="gmapsLink" href="#" target="_blank" rel="noopener">Open approximate route in Google Maps</a>
     <p class="note">OsmAnd follows the exact computed path. The Google Maps link nudges it through waypoints but re-routes with its own engine in between — treat it as a rough approximation, not exact.</p>
   </div>
+
+  <p class="note" id="buildId"></p>
 
   <!-- ?v= is bumped on every deploy that touches app.js -- belt-and-suspenders
        on top of the service worker's cache: 'no-store' fix: a version bump
        makes this a genuinely different URL, so it can't be served stale by
        any cache layer (browser HTTP cache, CDN, a not-yet-updated service
        worker) regardless of what any of them think its freshness is. -->
-  <script src="./app.js?v=5"></script>
+  <script src="./app.js?v=6"></script>
 </body>
 </html>

@@ -8,6 +8,15 @@
 // github.com/flockhopper3/deflock_maps) -- same as the Python CLI version
 // this PWA is a mobile counterpart to.
 
+// Bumped on every deploy and rendered at the bottom of the page. Exists
+// purely as a diagnostic: after two confirmed stale-cache bugs this session
+// (a fixed SW cache name that never changed, then GitHub Pages' HTTP cache
+// being honored by a bare fetch()), "it's still not updating" reports can't
+// be told apart from "still running old code" without a visible marker to
+// check. If a reported bug's build ID doesn't match the latest deploy, it's
+// caching, not logic -- if it matches, it's a real bug to find in this code.
+const BUILD_ID = '2026-09-17.1';
+
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
@@ -58,6 +67,7 @@ async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a desti
         // actually about to be used for routing.
         $('origin').value = '';
         $('originSuggestions').hidden = true;
+        $('originClear').hidden = true;
         $('originLabel').textContent = `Origin: current location (${currentOrigin.lat.toFixed(4)}, ${currentOrigin.lon.toFixed(4)})`;
         setStatus(statusOnSuccess);
         resolve(true);
@@ -566,8 +576,12 @@ async function downloadForOsmAnd() {
  * this existed only for the destination field; origin only had "Use current
  * location" with no way to type one in, despite getRoute()'s own error
  * message always having said "...or type one." */
-function wireLocationInput({ input, suggestionsBox, onResolved, onCleared, resolvedStatus }) {
+function wireLocationInput({ input, suggestionsBox, clearBtn, onResolved, onCleared, resolvedStatus }) {
   let timer = null;
+
+  function updateClearBtn() {
+    if (clearBtn) clearBtn.hidden = input.value.length === 0;
+  }
 
   function render(suggestions) {
     suggestionsBox.innerHTML = '';
@@ -584,6 +598,7 @@ function wireLocationInput({ input, suggestionsBox, onResolved, onCleared, resol
         suggestionsBox.hidden = true;
         suggestionsBox.innerHTML = '';
         input.value = s.name;
+        updateClearBtn();
 
         if (s.needsDetails) {
           // Google Autocomplete suggestions carry a placeId, not coordinates
@@ -608,8 +623,20 @@ function wireLocationInput({ input, suggestionsBox, onResolved, onCleared, resol
     suggestionsBox.hidden = false;
   }
 
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      onCleared();
+      render([]);
+      updateClearBtn();
+      input.focus();
+    });
+  }
+  updateClearBtn(); // initial state
+
   input.addEventListener('input', () => {
     onCleared(); // any manual edit invalidates a previously resolved location
+    updateClearBtn();
     const query = input.value.trim();
     clearTimeout(timer);
 
@@ -651,6 +678,7 @@ function wireLocationInput({ input, suggestionsBox, onResolved, onCleared, resol
 wireLocationInput({
   input: $('origin'),
   suggestionsBox: $('originSuggestions'),
+  clearBtn: $('originClear'),
   onResolved: (loc) => {
     currentOrigin = loc;
     $('originLabel').textContent = `Origin: ${loc.name}`;
@@ -665,6 +693,7 @@ wireLocationInput({
 wireLocationInput({
   input: $('destination'),
   suggestionsBox: $('destSuggestions'),
+  clearBtn: $('destClear'),
   onResolved: (loc) => {
     selectedDestination = loc;
   },
@@ -797,3 +826,6 @@ if (platformNote) {
       'Safari) — open this app directly and paste the address or Maps link into Destination below instead.'
     : 'Tip: tap Share on a place in Google Maps and pick Camera Route to auto-fill the destination.';
 }
+
+const buildIdEl = $('buildId');
+if (buildIdEl) buildIdEl.textContent = `build ${BUILD_ID}`;
