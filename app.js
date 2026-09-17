@@ -70,15 +70,28 @@ async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a desti
 /** Autocomplete predictions only -- no coordinates yet (Google's Autocomplete
  * endpoint doesn't return them, by design, to keep the common per-keystroke
  * call cheap). Coordinates are fetched via getGooglePlaceDetails only for
- * the one suggestion actually selected, not every suggestion shown. */
+ * the one suggestion actually selected, not every suggestion shown.
+ *
+ * Biased toward `currentOrigin` (a soft preference, not a hard restriction --
+ * a real match far away still shows up, just ranked lower) -- confirmed this
+ * was missing entirely and produced wrong results: "O'Reilly Auto" with no
+ * bias returned Florida matches ahead of the correct Austin one, purely
+ * because Google's Autocomplete has no location context by default and
+ * falls back to generic relevance/popularity ranking, not proximity. */
 async function searchGoogleAutocomplete(query) {
+  const body = { input: query };
+  if (currentOrigin) {
+    body.locationBias = {
+      circle: { center: { latitude: currentOrigin.lat, longitude: currentOrigin.lon }, radius: 50000.0 },
+    };
+  }
   const resp = await fetch(GOOGLE_AUTOCOMPLETE_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
     },
-    body: JSON.stringify({ input: query }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) return [];
   const data = await resp.json();
@@ -107,8 +120,15 @@ async function getGooglePlaceDetails(placeId) {
 /** One-shot geocode for the "typed/pasted and hit Get Route directly"
  * path -- Text Search rather than Autocomplete, since it returns a
  * location inline for a complete query with no separate details call
- * needed. */
+ * needed. Same currentOrigin bias as searchGoogleAutocomplete, for the
+ * same reason. */
 async function searchGoogleTextSearch(query) {
+  const body = { textQuery: query };
+  if (currentOrigin) {
+    body.locationBias = {
+      circle: { center: { latitude: currentOrigin.lat, longitude: currentOrigin.lon }, radius: 50000.0 },
+    };
+  }
   const resp = await fetch(GOOGLE_TEXTSEARCH_URL, {
     method: 'POST',
     headers: {
@@ -116,7 +136,7 @@ async function searchGoogleTextSearch(query) {
       'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
       'X-Goog-FieldMask': 'places.location,places.displayName,places.formattedAddress',
     },
-    body: JSON.stringify({ textQuery: query }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) return [];
   const data = await resp.json();
