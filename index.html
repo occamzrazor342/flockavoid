@@ -120,8 +120,12 @@
   <p class="note" id="platformNote"></p>
 
   <div class="card">
-    <label>Origin</label>
-    <button class="secondary" id="useLocationBtn">📍 Use current location</button>
+    <label for="origin">Origin</label>
+    <div id="originWrap" style="position: relative;">
+      <input type="text" id="origin" placeholder="Address, business name, or paste a Maps link" autocomplete="off" />
+      <div id="originSuggestions" class="suggestions" hidden></div>
+    </div>
+    <button class="secondary" id="useLocationBtn">📍 Or use current location</button>
     <div id="originLabel">Origin not set yet.</div>
 
     <label for="destination">Destination</label>
@@ -160,6 +164,11 @@
     <p class="note">OsmAnd follows the exact computed path. The Google Maps link nudges it through waypoints but re-routes with its own engine in between — treat it as a rough approximation, not exact.</p>
   </div>
 
-  <script src="./app.js"></script>
+  <!-- ?v= is bumped on every deploy that touches app.js -- belt-and-suspenders
+       on top of the service worker's cache: 'no-store' fix: a version bump
+       makes this a genuinely different URL, so it can't be served stale by
+       any cache layer (browser HTTP cache, CDN, a not-yet-updated service
+       worker) regardless of what any of them think its freshness is. -->
+  <script src="./app.js?v=5"></script>
 </body>
 </html>

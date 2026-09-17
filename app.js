@@ -29,7 +29,6 @@ const $ = (id) => document.getElementById(id);
 let currentOrigin = null;
 let lastResult = null;
 let selectedDestination = null; // set when the user picks a suggestion; cleared on manual edits
-let autocompleteTimer = null;
 
 function setStatus(msg, isError = false) {
   const el = $('status');
@@ -54,6 +53,11 @@ async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a desti
           lon: pos.coords.longitude,
           name: 'Current location',
         };
+        // Clear any manually-typed origin text/suggestions -- otherwise
+        // stale text could sit in the field not matching the GPS fix that's
+        // actually about to be used for routing.
+        $('origin').value = '';
+        $('originSuggestions').hidden = true;
         $('originLabel').textContent = `Origin: current location (${currentOrigin.lat.toFixed(4)}, ${currentOrigin.lon.toFixed(4)})`;
         setStatus(statusOnSuccess);
         resolve(true);
@@ -384,10 +388,36 @@ function googleMapsUrl(origin, destination, geometry) {
 
 async function getRoute() {
   const destInput = $('destination').value.trim();
+  const originInput = $('origin').value.trim();
   if (!destInput) {
     setStatus('Enter a destination first.', true);
     return;
   }
+
+  // Typed an origin but hit Get Route before a suggestion was clicked (or
+  // before the debounced dropdown even appeared) -- same direct-geocode
+  // fallback destination already gets below, so typing fast doesn't require
+  // waiting on the dropdown.
+  if (!currentOrigin && originInput) {
+    if (isShortenedMapsLink(originInput)) {
+      setStatus(
+        'That origin is a shortened Maps link, which can’t be read directly. Long-press the ' +
+        'exact spot on the map to drop a pin, copy the coordinates, and paste those here instead.',
+        true
+      );
+      return;
+    }
+    setStatus('Geocoding origin…');
+    try {
+      const pinnedOrigin = extractLatLon(originInput);
+      currentOrigin = pinnedOrigin ? { ...pinnedOrigin, name: originInput } : await geocode(originInput);
+      $('originLabel').textContent = `Origin: ${currentOrigin.name}`;
+    } catch (err) {
+      setStatus(`Could not find origin "${originInput}": ${err.message}`, true);
+      return;
+    }
+  }
+
   if (!currentOrigin) {
     setStatus('Set your origin first (tap "Use current location" or type one).', true);
     return;
@@ -528,91 +558,129 @@ async function downloadForOsmAnd() {
   }
 }
 
-function renderSuggestions(suggestions) {
-  const box = $('destSuggestions');
-  box.innerHTML = '';
-  if (!suggestions.length) {
-    box.hidden = true;
-    return;
-  }
-  for (const s of suggestions) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'suggestion-item';
-    item.textContent = s.name;
-    item.addEventListener('click', async () => {
-      box.hidden = true;
-      box.innerHTML = '';
-      $('destination').value = s.name;
+/** Wires a text input + suggestions dropdown to resolve a location from
+ * typed text -- shared by origin and destination, since it's the exact same
+ * operation (shortlink rejection, direct lat/lon extraction from a pasted
+ * link, debounced Google/Nominatim/Photon suggestions with lazy place-detail
+ * resolution on pick) applied to two different pieces of state. Previously
+ * this existed only for the destination field; origin only had "Use current
+ * location" with no way to type one in, despite getRoute()'s own error
+ * message always having said "...or type one." */
+function wireLocationInput({ input, suggestionsBox, onResolved, onCleared, resolvedStatus }) {
+  let timer = null;
 
-      if (s.needsDetails) {
-        // Google Autocomplete suggestions carry a placeId, not coordinates
-        // yet (see searchGoogleAutocomplete) -- resolve them only now, for
-        // the one place actually picked, not every suggestion shown.
-        setStatus('Getting exact location…');
-        try {
-          const details = await getGooglePlaceDetails(s.placeId);
-          selectedDestination = { ...details, name: s.name };
-          setStatus('Destination set. Tap Get Route.');
-        } catch (err) {
-          setStatus(`Could not get exact location: ${err.message}`, true);
-          selectedDestination = null;
-        }
-      } else {
-        selectedDestination = s;
-      }
-    });
-    box.appendChild(item);
-  }
-  box.hidden = false;
-}
-
-function onDestinationInput() {
-  selectedDestination = null; // any manual edit invalidates a previously picked suggestion
-  const query = $('destination').value.trim();
-  clearTimeout(autocompleteTimer);
-
-  if (isShortenedMapsLink(query)) {
-    renderSuggestions([]);
-    setStatus(
-      'That’s a shortened link — Google Maps shortens every share link by design, so ' +
-      'there’s no full-URL version to get to. Long-press the exact spot on the map to drop ' +
-      'a pin instead, copy the coordinates shown in the search bar, and paste those here.',
-      true
-    );
-    return;
-  }
-
-  const pinned = extractLatLon(query);
-  if (pinned) {
-    selectedDestination = { ...pinned, name: query };
-    renderSuggestions([]);
-    setStatus(`Pinned exact location from link: ${pinned.lat.toFixed(5)}, ${pinned.lon.toFixed(5)}`);
-    return;
-  }
-
-  if (query.length < AUTOCOMPLETE_MIN_CHARS) {
-    renderSuggestions([]);
-    return;
-  }
-  autocompleteTimer = setTimeout(async () => {
-    try {
-      const suggestions = await searchSuggestions(query);
-      // Only render if the input hasn't changed since this search started.
-      if ($('destination').value.trim() === query) renderSuggestions(suggestions);
-    } catch {
-      renderSuggestions([]);
+  function render(suggestions) {
+    suggestionsBox.innerHTML = '';
+    if (!suggestions.length) {
+      suggestionsBox.hidden = true;
+      return;
     }
-  }, AUTOCOMPLETE_DEBOUNCE_MS);
+    for (const s of suggestions) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'suggestion-item';
+      item.textContent = s.name;
+      item.addEventListener('click', async () => {
+        suggestionsBox.hidden = true;
+        suggestionsBox.innerHTML = '';
+        input.value = s.name;
+
+        if (s.needsDetails) {
+          // Google Autocomplete suggestions carry a placeId, not coordinates
+          // yet (see searchGoogleAutocomplete) -- resolve them only now, for
+          // the one place actually picked, not every suggestion shown.
+          setStatus('Getting exact location…');
+          try {
+            const details = await getGooglePlaceDetails(s.placeId);
+            onResolved({ ...details, name: s.name });
+            setStatus(resolvedStatus(s.name));
+          } catch (err) {
+            setStatus(`Could not get exact location: ${err.message}`, true);
+            onCleared();
+          }
+        } else {
+          onResolved(s);
+          setStatus(resolvedStatus(s.name));
+        }
+      });
+      suggestionsBox.appendChild(item);
+    }
+    suggestionsBox.hidden = false;
+  }
+
+  input.addEventListener('input', () => {
+    onCleared(); // any manual edit invalidates a previously resolved location
+    const query = input.value.trim();
+    clearTimeout(timer);
+
+    if (isShortenedMapsLink(query)) {
+      render([]);
+      setStatus(
+        'That’s a shortened link — Google Maps shortens every share link by design, so ' +
+        'there’s no full-URL version to get to. Long-press the exact spot on the map to drop ' +
+        'a pin instead, copy the coordinates shown in the search bar, and paste those here.',
+        true
+      );
+      return;
+    }
+
+    const pinned = extractLatLon(query);
+    if (pinned) {
+      onResolved({ ...pinned, name: query });
+      render([]);
+      setStatus(`Pinned exact location from link: ${pinned.lat.toFixed(5)}, ${pinned.lon.toFixed(5)}`);
+      return;
+    }
+
+    if (query.length < AUTOCOMPLETE_MIN_CHARS) {
+      render([]);
+      return;
+    }
+    timer = setTimeout(async () => {
+      try {
+        const suggestions = await searchSuggestions(query);
+        // Only render if the input hasn't changed since this search started.
+        if (input.value.trim() === query) render(suggestions);
+      } catch {
+        render([]);
+      }
+    }, AUTOCOMPLETE_DEBOUNCE_MS);
+  });
 }
+
+wireLocationInput({
+  input: $('origin'),
+  suggestionsBox: $('originSuggestions'),
+  onResolved: (loc) => {
+    currentOrigin = loc;
+    $('originLabel').textContent = `Origin: ${loc.name}`;
+  },
+  onCleared: () => {
+    currentOrigin = null;
+    $('originLabel').textContent = 'Origin not set yet.';
+  },
+  resolvedStatus: (name) => `Origin set to "${name}". Enter a destination and tap Get Route.`,
+});
+
+wireLocationInput({
+  input: $('destination'),
+  suggestionsBox: $('destSuggestions'),
+  onResolved: (loc) => {
+    selectedDestination = loc;
+  },
+  onCleared: () => {
+    selectedDestination = null;
+  },
+  resolvedStatus: (name) => `Destination set to "${name}". Tap Get Route.`,
+});
 
 $('useLocationBtn').addEventListener('click', () => useCurrentLocation());
 $('getRouteBtn').addEventListener('click', getRoute);
 $('shareOsmAndBtn').addEventListener('click', openInOsmAnd);
 $('downloadOsmAndBtn').addEventListener('click', downloadForOsmAnd);
-$('destination').addEventListener('input', onDestinationInput);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#destinationWrap')) $('destSuggestions').hidden = true;
+  if (!e.target.closest('#originWrap')) $('originSuggestions').hidden = true;
 });
 
 if ('serviceWorker' in navigator) {

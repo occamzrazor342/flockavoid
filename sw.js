@@ -21,8 +21,13 @@
 // the network and skip the HTTP cache entirely, so deploys take effect
 // immediately instead of up to 10 minutes later.
 
-const CACHE_NAME = 'camroute-shell-v3';
-const SHELL_FILES = ['./', './index.html', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'camroute-shell-v4';
+// app.js is intentionally not precached here -- index.html now references it
+// with a bumped ?v= query string on every deploy that touches it, so a fixed
+// unversioned './app.js' entry here would go stale and never match what's
+// actually requested. The fetch handler below still caches it dynamically
+// (whatever URL is actually requested) for the offline fallback case.
+const SHELL_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
