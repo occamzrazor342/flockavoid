@@ -569,7 +569,7 @@ function onDestinationInput() {
   }, AUTOCOMPLETE_DEBOUNCE_MS);
 }
 
-$('useLocationBtn').addEventListener('click', useCurrentLocation);
+$('useLocationBtn').addEventListener('click', () => useCurrentLocation());
 $('getRouteBtn').addEventListener('click', getRoute);
 $('shareOsmAndBtn').addEventListener('click', shareToOsmAnd);
 $('destination').addEventListener('input', onDestinationInput);
