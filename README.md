@@ -39,8 +39,12 @@ matters for the one-time install of this app.)
   of it directly. Only works for a full link, not a shortened `maps.app.goo.gl` one (see
   below for why there's no workaround for those).
 - **Android only, using Chrome or Samsung Internet: tap Share on a place in Google Maps
-  and pick "Camera Route"** — the smoothest path when it's available, but see the two
-  limitations below before relying on it.
+  and pick "Camera Route"** — the smoothest path, and the intended default way to use
+  this app. Google Maps' share intent sends a shortened link, but it also bundles the
+  place's name/address as plain text right alongside it — this app strips the link out
+  and looks up that name/address via Google Places automatically, so most real shares
+  resolve without you doing anything else. It only falls back to asking you to drop a
+  pin manually if a share truly has no place name attached, just a bare link.
 
 ## Known limitations, and why
 
@@ -49,11 +53,14 @@ matters for the one-time install of this app.)
   building/strip mall — tagged to whichever single tenant a volunteer happened to map. If
   a business-name or address search doesn't find your destination, paste its Maps link
   instead — that always has the exact coordinates regardless of what OSM has indexed.
-- **Shortened Maps links (`maps.app.goo.gl`) can't be resolved automatically.** Google's
-  bot-detection blocks this specifically from cloud/datacenter IPs, which is exactly what
-  any server-side resolver (including this app's) runs on. This is a deliberate stopping
-  point, not a bug still being worked on — open the shortlink once in your own browser
-  (which isn't flagged) and share/paste the resulting full URL instead.
+- **Shortened Maps links (`maps.app.goo.gl`) can't be resolved to coordinates
+  automatically.** Google's bot-detection blocks this specifically from cloud/datacenter
+  IPs, which is exactly what any server-side resolver (including this app's) runs on.
+  This is a deliberate stopping point, not a bug still being worked on. In practice this
+  rarely matters for the Share flow above, since the shared text alongside the link
+  usually has the place's name/address, which gets geocoded directly instead. It only
+  bites if you paste a bare shortlink — with no other text — straight into the
+  Destination field; do a long-press pin-drop instead in that case.
 - **Share-from-Maps auto-fill is Android-only.** iOS Safari has never implemented the Web
   Share Target API (the piece that lets an installed PWA appear as a share destination) —
   this is an Apple platform gap, not something this app can work around. iPhone users:

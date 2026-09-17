@@ -592,6 +592,20 @@ if ('serviceWorker' in navigator) {
  * button already used for everything else. Chrome's GET-method share
  * target appends the shared data as query params to this same page.
  *
+ * Real-world Google Maps shares are a shortlink (maps.app.goo.gl), which
+ * can't be resolved to coordinates (see extractLatLon's docstring) -- but
+ * critically, Android's share intent for a place doesn't send *just* the
+ * link. It bundles the place name/address as plain text alongside it (e.g.
+ * "O'Reilly Auto Parts, 13776 N Hwy 183 #119, Austin, TX · https://maps.app
+ * .goo.gl/xxxx"). Earlier versions of this handler bailed out the moment
+ * they saw a shortlink anywhere in the shared text, without ever looking at
+ * that surrounding text -- which defeated the entire point of Share-to-app
+ * for the common case. Fixed: strip the link out and geocode whatever text
+ * remains via Google Places (the same lookup already proven to find a
+ * specific business in a shared building), instead of demanding raw
+ * coordinates. Only falls back to manual pin-drop instructions when there's
+ * truly no usable text left after stripping the link.
+ *
  * Falls through silently if there's nothing to handle (a normal open).
  */
 async function handleIncomingShare() {
@@ -606,33 +620,53 @@ async function handleIncomingShare() {
   // Clear the query string immediately so a page refresh/back doesn't replay it.
   history.replaceState({}, '', location.pathname);
 
-  if (isShortenedMapsLink(combined)) {
-    setStatus(
-      'Shared a shortened link — Google/Apple Maps always shorten links shared this way, ' +
-      'so re-sharing won’t help. Instead: in Maps, long-press the exact spot on the map to ' +
-      'drop a pin, copy the coordinates from the search bar, and paste those into this app ' +
-      'directly.',
-      true
-    );
-    return;
-  }
-
+  // Best case: a full (unshortened) link or bare coordinates -- exact,
+  // no geocoding needed.
   const pinned = extractLatLon(combined);
-  if (!pinned) {
+  if (pinned) {
+    const name = sharedTitle || sharedText || 'Shared location';
+    selectedDestination = { lat: pinned.lat, lon: pinned.lon, name };
+    $('destination').value = name;
+    const gotLocation = await useCurrentLocation(`Got "${name}" — calculating route…`);
+    if (gotLocation) await getRoute();
+    return;
+  }
+
+  const searchableText = [sharedTitle, sharedText]
+    .filter(Boolean)
+    .join(', ')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim()
+    .replace(/^[,\s]+|[,\s]+$/g, '');
+
+  if (!searchableText) {
     setStatus(
-      'Received a share but couldn’t find coordinates in it. Try sharing again from ' +
-      'the place’s own page in Maps (not a search results list).',
+      'Received a share with no usable place name, just a link Google shortens by design ' +
+      'and can’t be resolved automatically. Long-press the exact spot on the map to drop a ' +
+      'pin instead, or open the app and type the destination.',
       true
     );
     return;
   }
 
-  const name = sharedTitle || sharedText || 'Shared location';
-  selectedDestination = { lat: pinned.lat, lon: pinned.lon, name };
-  $('destination').value = name;
+  $('destination').value = searchableText;
+  const gotLocation = await useCurrentLocation(`Got "${searchableText}" — looking up exact location…`);
+  if (!gotLocation) return;
 
-  const gotLocation = await useCurrentLocation(`Got "${name}" — calculating route…`);
-  if (gotLocation) await getRoute();
+  try {
+    setStatus('Looking up exact location…');
+    const destination = await geocode(searchableText);
+    selectedDestination = destination;
+    $('destination').value = destination.name || searchableText;
+    await getRoute();
+  } catch (err) {
+    setStatus(
+      `Couldn’t find "${searchableText}" automatically (${err.message}). Long-press the ` +
+      'exact spot on the map to drop a pin instead, or edit the destination below and pick ' +
+      'from the suggestions dropdown.',
+      true
+    );
+  }
 }
 
 handleIncomingShare();
