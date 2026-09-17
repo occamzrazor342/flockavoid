@@ -176,12 +176,12 @@
     <div class="stat-row"><span>Extra distance</span><span id="statDistance"></span></div>
     <div class="stat-row"><span>Extra time</span><span id="statTime"></span></div>
 
-    <button class="primary" id="downloadOsmAndBtn" style="margin-top: 14px;">⬇️ Navigate in OsmAnd (exact route)</button>
-    <p class="note">Downloads the route and opens it straight into turn-by-turn navigation. Check your notifications, tap the download, choose Open, then pick OsmAnd if asked.</p>
-    <button class="secondary" id="shareOsmAndBtn">🗺️ Or just import the track</button>
-    <p class="note">Adds the route to OsmAnd's My Places → Tracks without starting navigation — useful for saving a route for later, but you'll need to find it there yourself and tap Navigate. Skip this one unless that's specifically what you want.</p>
+    <button class="primary" id="navigateOsmAndBtn" style="margin-top: 14px;">🧭 Navigate in OsmAnd</button>
+    <p class="note">No file, no download — opens straight into OsmAnd's turn-by-turn screen. Closely follows the camera-avoidance route, but OsmAnd's own engine fills in the road between waypoints, so on a long detour it could occasionally choose differently than the exact computed path.</p>
+    <button class="secondary" id="downloadOsmAndBtn">⬇️ Or download the exact route</button>
+    <p class="note">Guarantees the literal computed path (no re-routing gaps) at the cost of one extra step: downloads a file — tap the download notification, choose Open, then pick OsmAnd.</p>
     <a class="gmaps-link" id="gmapsLink" href="#" target="_blank" rel="noopener">Open approximate route in Google Maps</a>
-    <p class="note">OsmAnd follows the exact computed path. The Google Maps link nudges it through waypoints but re-routes with its own engine in between — treat it as a rough approximation, not exact.</p>
+    <p class="note">Same waypoint-approximation tradeoff as the OsmAnd button above, via Google's own engine instead.</p>
   </div>
 
   <p class="note" id="buildId"></p>
@@ -191,6 +191,6 @@
        makes this a genuinely different URL, so it can't be served stale by
        any cache layer (browser HTTP cache, CDN, a not-yet-updated service
        worker) regardless of what any of them think its freshness is. -->
-  <script src="./app.js?v=7"></script>
+  <script src="./app.js?v=8"></script>
 </body>
 </html>

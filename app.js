@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.2';
+const BUILD_ID = '2026-09-17.3';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -396,6 +396,44 @@ function googleMapsUrl(origin, destination, geometry) {
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+/** OsmAnd registers a real navigation deep link too, distinct from the
+ * open-gpx one (confirmed directly in OsmAnd's source,
+ * IntentHelper.parseNavigationIntent + buildRoute):
+ * osmand.net/map/navigate?start=lat,lon&end=lat,lon&via=lat,lon;lat,lon;...
+ * &profile=car. Unlike open-gpx this doesn't just import a track -- it
+ * calls the exact same enterRoutePlanningModeGivenGpx(..., showMenu=true)
+ * OsmAnd's own destination search uses, which is what actually produces the
+ * live route-preview/turn-by-turn screen. No upload to our own worker, no
+ * downloaded file, no notification tap -- one link, straight into
+ * navigation.
+ *
+ * The real tradeoff, and it's a genuine one for a camera-avoidance app
+ * specifically: `via` is a list of waypoints, not the literal recorded
+ * path -- OsmAnd's own routing engine still chooses the road between each
+ * pair, same caveat as the Google Maps link above. Given enough closely-
+ * spaced via points there's normally only one sane road to take between
+ * two of them, so it should track the real avoidance route closely, but
+ * "should closely track" isn't "guaranteed identical" -- unlike the
+ * downloaded GPX, which OsmAnd follows exactly because it's a real
+ * recorded track, not a routing request. OSMAND_MAX_VIA_POINTS is
+ * generous (no hard limit found in OsmAnd's own parser) but still
+ * downsampled to keep the URL a sane length. */
+const OSMAND_MAX_VIA_POINTS = 200;
+
+function osmandNavigateUrl(origin, destination, geometry) {
+  const interior = geometry.length > 2 ? geometry.slice(1, -1) : [];
+  const via = downsample(interior, OSMAND_MAX_VIA_POINTS);
+  const params = new URLSearchParams({
+    start: `${origin.lat},${origin.lon}`,
+    end: `${destination.lat},${destination.lon}`,
+    profile: 'car',
+  });
+  if (via.length) {
+    params.set('via', via.map(([lat, lon]) => `${lat},${lon}`).join(';'));
+  }
+  return `https://osmand.net/map/navigate?${params.toString()}`;
+}
+
 async function getRoute() {
   const destInput = $('destination').value.trim();
   const originInput = $('origin').value.trim();
@@ -501,49 +539,30 @@ async function uploadGPX(gpxContent) {
   return url;
 }
 
-/** Primary path: OsmAnd registers a real Android deep link for exactly
- * this case -- osmand.net/open-gpx?url=<gpx-url> -- confirmed directly in
- * OsmAnd's own source (IntentHelper.parseOpenGpxIntent, osmandapp/OsmAnd
- * on GitHub): Android's app-link routing hands the URL straight to OsmAnd
- * (the request never actually reaches osmand.net's server -- the OS
- * intercepts it purely from the installed app's manifest before any
- * network call happens), and OsmAnd downloads and imports the GPX
- * itself. No visible file lands in Downloads, no notification-tray detour
- * -- confirmed as the real fix for "having to download and save a file
- * every time" being a bad ask.
- *
- * One honest limitation, also read directly from that same source: this
- * handler only downloads + imports the track (into My Places -> Tracks)
- * and shows a toast -- it does not auto-start navigation the way opening
- * a local GPX file directly can. Worth it for skipping the file-download
- * dance, but expect one extra "open the track, tap Navigate" step.
- */
-async function openInOsmAnd() {
+/** Primary path: osmand.net/map/navigate (see osmandNavigateUrl's comment
+ * above for the full source-confirmed mechanism). No upload, no file, no
+ * notification tap -- straight into OsmAnd's route-preview/turn-by-turn
+ * screen off a single link tap. Supersedes an earlier osmand.net/open-gpx
+ * version of this function, which only imported a track with no way to
+ * start navigating it automatically -- confirmed live that this was
+ * confusing standalone (a re-imported route with no visible change looked
+ * exactly like nothing had happened). */
+function navigateInOsmAnd() {
   if (!lastResult) return;
-  const { origin, destination, avoidance, improvement } = lastResult;
-  const name = `Camera-avoidance ${origin.name} to ${destination.name}`;
-  const description = `${improvement.camerasAvoided} cameras avoided vs. the normal route`;
-  const gpxContent = generateGPX(avoidance, name, description);
-
-  try {
-    setStatus('Uploading route…');
-    const gpxUrl = await uploadGPX(gpxContent);
-    const openGpxUrl = `https://osmand.net/open-gpx?url=${encodeURIComponent(gpxUrl)}&name=${encodeURIComponent(name)}`;
-    window.location.href = openGpxUrl;
-    setStatus('Opening in OsmAnd… once it’s imported, open My Places → Tracks and tap Navigate.');
-  } catch (err) {
-    setStatus(`Could not open the route in OsmAnd: ${err.message}`, true);
-  }
+  const { origin, destination, avoidance } = lastResult;
+  window.location.href = osmandNavigateUrl(origin, destination, avoidance.geometry);
+  setStatus('Opening turn-by-turn in OsmAnd…');
 }
 
-/** Fallback path, kept for when the deep link above doesn't route to
- * OsmAnd on a given device/browser (e.g. OsmAnd not installed, or the
- * link just loads osmand.net's real page instead of being intercepted).
- * Confirmed working previously: force a real download (Content-Disposition:
- * attachment) so Android's "download complete -> Open" notification fires
- * a VIEW intent with the application/gpx+xml MIME type OsmAnd's manifest
- * is registered for -- the same mechanism as opening a GPX email
- * attachment. */
+/** Fallback path for when the via-points approximation above isn't good
+ * enough -- the one case where it genuinely matters is a long/twisty
+ * detour where a via-point gap could let OsmAnd's own engine reroute
+ * through a camera the avoidance route specifically avoided. This forces
+ * a real download (Content-Disposition: attachment) so Android's
+ * "download complete -> Open" notification fires a VIEW intent with the
+ * application/gpx+xml MIME type OsmAnd's manifest is registered for --
+ * the same mechanism as opening a GPX email attachment -- and OsmAnd
+ * follows the literal recorded track, not a re-routed approximation. */
 async function downloadForOsmAnd() {
   if (!lastResult) return;
   const { origin, destination, avoidance, improvement } = lastResult;
@@ -712,7 +731,7 @@ wireLocationInput({
 
 $('useLocationBtn').addEventListener('click', () => useCurrentLocation());
 $('getRouteBtn').addEventListener('click', getRoute);
-$('shareOsmAndBtn').addEventListener('click', openInOsmAnd);
+$('navigateOsmAndBtn').addEventListener('click', navigateInOsmAnd);
 $('downloadOsmAndBtn').addEventListener('click', downloadForOsmAnd);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#destinationWrap')) $('destSuggestions').hidden = true;
