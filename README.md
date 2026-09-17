@@ -14,7 +14,9 @@ runs like a real app.
    tradeoff (cameras avoided vs. extra time/distance) before you commit to it.
 2. Hands the exact computed route to [OsmAnd](https://osmand.net) for real turn-by-turn
    navigation, which is what actually shows up on your car's screen (Android Auto or
-   CarPlay — OsmAnd supports both, paid tier).
+   CarPlay — OsmAnd supports both, paid tier). Tapping "Download for OsmAnd" downloads a
+   `.gpx` file (the same mechanism as opening a GPX email attachment); once the download
+   finishes, tap the notification, choose Open, then pick OsmAnd.
 3. Separately, install the official [DeFlock app](https://deflock.org/app) for live
    background proximity alerts as you drive, regardless of which nav app is open.
 
@@ -71,11 +73,13 @@ matters for the one-time install of this app.)
 - `index.html` / `app.js` / `manifest.json` / `sw.js` — the PWA itself, plain
   HTML/CSS/JS, no build step, no framework, no dependencies. Hosted on GitHub Pages.
 - `worker/worker.js` — a small Cloudflare Worker doing two things browser JS can't do on
-  its own: hosting the generated GPX at a real HTTPS URL (Chrome's Web Share API only
-  allows a fixed allowlist of common file types for direct file-sharing — `.gpx` isn't on
-  it, sharing a URL instead has no such restriction), and (for other Maps link shapes,
-  not shortlinks — see above) following a redirect server-side where CORS would block a
-  browser from doing the same.
+  its own: hosting the generated GPX at a real HTTPS URL served as a forced download
+  (Chrome's Web Share API only allows a fixed allowlist of common file types for direct
+  file-sharing — `.gpx` isn't on it, and sharing the URL itself instead of a real file
+  doesn't work either — OsmAnd doesn't import from a shared link, only from an actual
+  `application/gpx+xml` file via Android's normal "open with" flow, the same as a GPX
+  email attachment), and (for other Maps link shapes, not shortlinks — see above)
+  following a redirect server-side where CORS would block a browser from doing the same.
 
 GPX generation mirrors [deflock_maps](https://github.com/flockhopper3/deflock_maps)'s own
 `gpxService.ts` (MIT licensed).

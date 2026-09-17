@@ -457,11 +457,18 @@ async function shareToOsmAnd() {
 
   // Chrome's Web Share API only allows a fixed allowlist of common file
   // types (image/audio/video/PDF/plain text) -- confirmed .gpx is not on
-  // it, and there's no way to get around that from a website. The fix:
-  // host the GPX at a real HTTPS URL (via the bridge worker) and share
-  // that URL instead of a file -- sharing a URL has no such restriction,
-  // and OsmAnd's own file-open intent filter matches a link ending in
-  // .gpx the same way it matches a local file.
+  // it. Hosting the GPX at a URL sidesteps that, but sharing that *URL*
+  // via navigator.share() turned out to be the wrong fix too -- confirmed
+  // on a real device: OsmAnd doesn't treat a shared link as something to
+  // fetch and import, it just runs its default "search this text" on the
+  // URL string, landing on a nonsense place search.
+  //
+  // What actually works is the same mechanism as opening a GPX email
+  // attachment: navigate straight to the file so Chrome downloads it
+  // (the worker sends Content-Disposition: attachment for exactly this),
+  // then tap the resulting "Download complete" notification's Open
+  // action, which fires a real VIEW intent with the application/gpx+xml
+  // MIME type -- the one OsmAnd's manifest is actually registered for.
   try {
     setStatus('Uploading route…');
     const uploadResp = await fetch(`${BRIDGE_WORKER_URL}/gpx`, {
@@ -472,22 +479,16 @@ async function shareToOsmAnd() {
     if (!uploadResp.ok) throw new Error(`Upload failed (${uploadResp.status})`);
     const { url: gpxUrl } = await uploadResp.json();
 
-    if (navigator.canShare && navigator.canShare({ url: gpxUrl })) {
-      await navigator.share({ url: gpxUrl, title: name, text: description });
-      setStatus('Shared. Pick OsmAnd, then tap Navigation → Start.');
-    } else if (navigator.share) {
-      // Some browsers support share() for URLs without canShare() pre-check.
-      await navigator.share({ url: gpxUrl, title: name, text: description });
-      setStatus('Shared. Pick OsmAnd, then tap Navigation → Start.');
-    } else {
-      // No Web Share support at all -- last resort, open the link directly
-      // so the user can long-press / use the browser's own "Open with".
-      window.open(gpxUrl, '_blank');
-      setStatus('Web Share isn’t available here — opened the route link directly instead.', true);
-    }
+    const link = document.createElement('a');
+    link.href = gpxUrl;
+    link.download = 'route.gpx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setStatus('Downloading the route… check your notifications, tap Open, then pick OsmAnd.');
   } catch (err) {
-    if (err.name === 'AbortError') return; // user cancelled the share sheet
-    setStatus(`Could not share the route: ${err.message}`, true);
+    setStatus(`Could not download the route: ${err.message}`, true);
   }
 }
 

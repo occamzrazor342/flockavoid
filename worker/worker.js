@@ -15,10 +15,15 @@
  *    Stores the GPX in KV and returns a real HTTPS URL for it. Chrome's
  *    Web Share API only allows sharing a fixed allowlist of common file
  *    types (image/audio/video/PDF/plain text) -- .gpx isn't on it, and
- *    there's no way to spoof past that from a website. Sharing a *URL*
- *    instead of a file has no such restriction, and OsmAnd's own
- *    ACTION_VIEW intent filter for application/gpx+xml matches a shared
- *    link ending in .gpx just as it does a local file.
+ *    there's no way to spoof past that from a website. Hosting it at a
+ *    URL sidesteps that, but only works if the app fetches the URL as a
+ *    real file download (Content-Disposition: attachment below) -- OsmAnd
+ *    doesn't import a GPX from ACTION_SEND text containing a link (a
+ *    real, confirmed device test: it just searched the URL string as a
+ *    place name instead). What it DOES recognize is the exact same
+ *    android.intent.action.VIEW + application/gpx+xml MIME type it uses
+ *    for a tapped email/Drive attachment -- which is exactly what Chrome's
+ *    "download complete -> Open" flow produces for an unrenderable file.
  *    GET /gpx/<id> serves the stored content back with the right
  *    Content-Type. Entries expire after 1 hour (KV expirationTtl) --
  *    this is a short-lived handoff, not permanent storage.
@@ -112,7 +117,13 @@ export default {
         headers: {
           ...CORS_HEADERS,
           'Content-Type': 'application/gpx+xml',
-          'Content-Disposition': 'inline; filename="route.gpx"',
+          // attachment, not inline: forces Chrome to download this rather
+          // than try to display it, which is what makes Android's
+          // "download complete -> Open" flow appear at all. inline was the
+          // original bug here -- confirmed live it let OsmAnd's own share
+          // handler receive a bare URL as shared text and search it as a
+          // place name instead of importing it.
+          'Content-Disposition': 'attachment; filename="route.gpx"',
         },
       });
     }
