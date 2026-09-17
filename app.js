@@ -15,19 +15,22 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.8';
+const BUILD_ID = '2026-09-17.9';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
-// Restricted to https://occamzrazor342.github.io/* via HTTP referrer + to the
-// Places API (New) only, via API restriction -- safe to be visible in this
-// public client-side file. Free OSM-based geocoders (Nominatim/Photon) kept
-// as a fallback below, not primary -- confirmed directly that they frequently
+// Google Text Search now goes through our own Worker proxy instead of a
+// client-side Google key -- that key was flagged by GitHub's secret scanner
+// (correctly: it's a real, live credential in a public repo) and, separately,
+// HTTP-referrer restriction turned out unreliable on iOS Safari's standalone
+// PWA mode, which is known to strip the Referer header entirely. The Worker
+// holds a server-only key never shipped to any client, so neither problem
+// applies here any more. Free OSM-based geocoders (Nominatim/Photon) kept as
+// a fallback below, not primary -- confirmed directly that they frequently
 // lack a specific business in a shared building even when Google has it.
-const GOOGLE_PLACES_API_KEY = 'AIzaSyAA_CuzgXXdnr0ArJaVhzlbK02ctX5BOvM';
-const GOOGLE_TEXTSEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
+const GOOGLE_TEXTSEARCH_URL = `${BRIDGE_WORKER_URL}/places/searchtext`;
 const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
 const AUTOCOMPLETE_DEBOUNCE_MS = 400;
 const AUTOCOMPLETE_MIN_CHARS = 3;
@@ -122,13 +125,11 @@ async function searchGoogleTextSearch(query) {
       circle: { center: { latitude: currentOrigin.lat, longitude: currentOrigin.lon }, radius: 50000.0 },
     };
   }
+  // No API key or FieldMask header here any more -- the Worker proxy holds the
+  // real key server-side and applies its own fixed FieldMask (see worker.js).
   const resp = await fetch(GOOGLE_TEXTSEARCH_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
-      'X-Goog-FieldMask': 'places.location,places.displayName,places.formattedAddress',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!resp.ok) return [];
