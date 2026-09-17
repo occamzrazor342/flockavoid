@@ -12,6 +12,14 @@ const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
+// Restricted to https://occamzrazor342.github.io/* via HTTP referrer + to the
+// Places API (New) only, via API restriction -- safe to be visible in this
+// public client-side file. Free OSM-based geocoders (Nominatim/Photon) kept
+// as a fallback below, not primary -- confirmed directly that they frequently
+// lack a specific business in a shared building even when Google has it.
+const GOOGLE_PLACES_API_KEY = 'AIzaSyAA_CuzgXXdnr0ArJaVhzlbK02ctX5BOvM';
+const GOOGLE_AUTOCOMPLETE_URL = 'https://places.googleapis.com/v1/places:autocomplete';
+const GOOGLE_TEXTSEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
 const AUTOCOMPLETE_DEBOUNCE_MS = 400;
 const AUTOCOMPLETE_MIN_CHARS = 3;
@@ -59,6 +67,66 @@ async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a desti
   });
 }
 
+/** Autocomplete predictions only -- no coordinates yet (Google's Autocomplete
+ * endpoint doesn't return them, by design, to keep the common per-keystroke
+ * call cheap). Coordinates are fetched via getGooglePlaceDetails only for
+ * the one suggestion actually selected, not every suggestion shown. */
+async function searchGoogleAutocomplete(query) {
+  const resp = await fetch(GOOGLE_AUTOCOMPLETE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+    },
+    body: JSON.stringify({ input: query }),
+  });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  return (data.suggestions || [])
+    .map((s) => s.placePrediction)
+    .filter(Boolean)
+    .map((p) => ({ name: p.text.text, placeId: p.placeId, needsDetails: true, lat: null, lon: null }));
+}
+
+async function getGooglePlaceDetails(placeId) {
+  const resp = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+    headers: {
+      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+      'X-Goog-FieldMask': 'location,displayName,formattedAddress',
+    },
+  });
+  if (!resp.ok) throw new Error(`Place details failed (${resp.status})`);
+  const data = await resp.json();
+  return {
+    lat: data.location.latitude,
+    lon: data.location.longitude,
+    name: data.formattedAddress || data.displayName?.text || placeId,
+  };
+}
+
+/** One-shot geocode for the "typed/pasted and hit Get Route directly"
+ * path -- Text Search rather than Autocomplete, since it returns a
+ * location inline for a complete query with no separate details call
+ * needed. */
+async function searchGoogleTextSearch(query) {
+  const resp = await fetch(GOOGLE_TEXTSEARCH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+      'X-Goog-FieldMask': 'places.location,places.displayName,places.formattedAddress',
+    },
+    body: JSON.stringify({ textQuery: query }),
+  });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  return (data.places || []).map((p) => ({
+    lat: p.location.latitude,
+    lon: p.location.longitude,
+    name: p.formattedAddress || p.displayName?.text || query,
+  }));
+}
+
 async function searchNominatim(query, limit = 5) {
   const params = new URLSearchParams({ q: query, format: 'json', limit: String(limit) });
   const resp = await fetch(`${NOMINATIM_URL}?${params}`, { headers: { Accept: 'application/json' } });
@@ -88,22 +156,25 @@ async function searchPhoton(query, limit = 5) {
   });
 }
 
-/** Live suggestions for the autocomplete dropdown -- Nominatim first, Photon
- * merged in too, since they index things differently (this address search
- * problem is exactly why: Nominatim matches strict OSM road-name tagging,
- * e.g. "US 183" not "N Hwy 183"/"N Highway 183", with no abbreviation
- * tolerance, and Photon sometimes finds what Nominatim misses or vice
- * versa). Letting the user pick from what's actually indexed sidesteps
- * needing to guess address-normalization rules entirely. */
+/** Live suggestions for the autocomplete dropdown. Google Places first --
+ * confirmed directly (see git history/commit messages around this) that it
+ * finds specific businesses in shared buildings/strip malls that Nominatim
+ * and Photon both miss, since Google's database is licensed/verified
+ * business data, not volunteer OSM tagging. Nominatim + Photon results are
+ * still merged in after, since they occasionally have something Google's
+ * result set doesn't surface first, and cost nothing extra to include.
+ * Google suggestions carry a placeId instead of coordinates (see
+ * searchGoogleAutocomplete) -- resolved lazily on selection, not here. */
 async function searchSuggestions(query) {
-  const [nominatimResults, photonResults] = await Promise.all([
+  const [googleResults, nominatimResults, photonResults] = await Promise.all([
+    searchGoogleAutocomplete(query).catch(() => []),
     searchNominatim(query).catch(() => []),
     searchPhoton(query).catch(() => []),
   ]);
   const seen = new Set();
   const combined = [];
-  for (const r of [...nominatimResults, ...photonResults]) {
-    const key = `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
+  for (const r of [...googleResults, ...nominatimResults, ...photonResults]) {
+    const key = r.placeId || `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     combined.push(r);
@@ -134,8 +205,14 @@ async function searchSuggestions(query) {
  *
  * Does NOT resolve shortened links (maps.app.goo.gl, goo.gl/maps) -- those
  * redirect server-side with no CORS exposure, so a browser can't follow them
- * to the real URL. If a shortlink is pasted, tell the user to open it once
- * and paste the resulting full URL instead.
+ * to the real URL. And critically, there's no "get the full URL instead"
+ * workaround here: Google Maps' Share button shortens every link by design,
+ * unconditionally, regardless of how you got to the place first (confirmed
+ * before writing this comment -- re-sharing after opening a shortlink still
+ * produces another shortlink). The only reliable fallback is dropping a pin
+ * by long-pressing the exact spot on the map (not searching for it), which
+ * shows raw coordinates in the search bar with no Share/shortlink pipeline
+ * involved at all.
  */
 function extractLatLon(text) {
   const bare = text.match(/^\s*(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/);
@@ -166,6 +243,9 @@ function isShortenedMapsLink(text) {
 }
 
 async function geocode(address) {
+  const googleResults = await searchGoogleTextSearch(address).catch(() => []);
+  if (googleResults.length) return { ...googleResults[0], name: googleResults[0].name || address };
+
   const nominatimResults = await searchNominatim(address, 1).catch(() => []);
   if (nominatimResults.length) return { ...nominatimResults[0], name: address };
 
@@ -173,10 +253,9 @@ async function geocode(address) {
   if (photonResults.length) return { ...photonResults[0], name: address };
 
   throw new Error(
-    `Could not find "${address}" in either geocoder. Try: dropping the unit/suite ` +
-    `number, using the highway's official name (e.g. "US 183" instead of "Hwy 183"), ` +
-    `picking from the suggestion dropdown as you type instead of typing the full ` +
-    `address and pressing Get Route directly, or entering coordinates as "lat,lon".`
+    `Could not find "${address}" anywhere, including Google. Try picking from the ` +
+    `suggestion dropdown as you type instead of typing the full address and pressing ` +
+    `Get Route directly, or entering coordinates as "lat,lon".`
   );
 }
 
@@ -296,8 +375,10 @@ async function getRoute() {
 
   if (isShortenedMapsLink(destInput)) {
     setStatus(
-      'Shortened Maps links (maps.app.goo.gl / goo.gl/maps) can’t be read directly — ' +
-      'open it once and paste the resulting full URL instead.',
+      'Shortened Maps links (maps.app.goo.gl / goo.gl/maps) can’t be read directly, and ' +
+      'Google Maps shortens every share link by design (re-sharing won’t give a different ' +
+      'result). Instead: long-press the exact spot on the map to drop a pin, copy the ' +
+      'coordinates shown in the search bar, and paste those here.',
       true
     );
     return;
@@ -402,11 +483,27 @@ function renderSuggestions(suggestions) {
     item.type = 'button';
     item.className = 'suggestion-item';
     item.textContent = s.name;
-    item.addEventListener('click', () => {
-      selectedDestination = s;
-      $('destination').value = s.name;
+    item.addEventListener('click', async () => {
       box.hidden = true;
       box.innerHTML = '';
+      $('destination').value = s.name;
+
+      if (s.needsDetails) {
+        // Google Autocomplete suggestions carry a placeId, not coordinates
+        // yet (see searchGoogleAutocomplete) -- resolve them only now, for
+        // the one place actually picked, not every suggestion shown.
+        setStatus('Getting exact location…');
+        try {
+          const details = await getGooglePlaceDetails(s.placeId);
+          selectedDestination = { ...details, name: s.name };
+          setStatus('Destination set. Tap Get Route.');
+        } catch (err) {
+          setStatus(`Could not get exact location: ${err.message}`, true);
+          selectedDestination = null;
+        }
+      } else {
+        selectedDestination = s;
+      }
     });
     box.appendChild(item);
   }
@@ -421,7 +518,9 @@ function onDestinationInput() {
   if (isShortenedMapsLink(query)) {
     renderSuggestions([]);
     setStatus(
-      'That’s a shortened link — open it once (it’ll redirect in your browser) and paste the resulting full URL here instead.',
+      'That’s a shortened link — Google Maps shortens every share link by design, so ' +
+      'there’s no full-URL version to get to. Long-press the exact spot on the map to drop ' +
+      'a pin instead, copy the coordinates shown in the search bar, and paste those here.',
       true
     );
     return;
@@ -489,8 +588,10 @@ async function handleIncomingShare() {
 
   if (isShortenedMapsLink(combined)) {
     setStatus(
-      'Shared a shortened link — Google/Apple sometimes send the short form even ' +
-      'through Share. Open it in Maps once, then Share again.',
+      'Shared a shortened link — Google/Apple Maps always shorten links shared this way, ' +
+      'so re-sharing won’t help. Instead: in Maps, long-press the exact spot on the map to ' +
+      'drop a pin, copy the coordinates from the search bar, and paste those into this app ' +
+      'directly.',
       true
     );
     return;

@@ -18,16 +18,29 @@ runs like a real app.
 3. Separately, install the official [DeFlock app](https://deflock.org/app) for live
    background proximity alerts as you drive, regardless of which nav app is open.
 
+## Installing it (Android)
+
+**Only Chrome and Samsung Internet can install this as a real app on Android** — every
+other browser (DuckDuckGo, Firefox, Edge, Opera, ...) can only create a plain home-screen
+bookmark shortcut, which opens the page fine but never registers with Android's share
+system. If "Camera Route" doesn't show up when you tap Share on a place in Google Maps,
+this is almost certainly why — reinstall using Chrome or Samsung Internet specifically.
+(You can still browse the rest of the web with whatever browser you prefer; this only
+matters for the one-time install of this app.)
+
 ## Entering a destination
 
 - **Type an address or business name** — live suggestions appear as you type (pulled
   from both Nominatim and Photon, since either one alone misses real addresses).
-- **Paste a Google/Apple Maps link** — pulls the exact coordinates out of the link,
-  bypassing address search entirely. Use the *expanded* link (not a shortened
-  `maps.app.goo.gl` one — open it once first if that's what you have; see "Known
-  limitations" below).
-- **Android only: tap Share on a place in Google Maps and pick "Camera Route"** — this
-  is the smoothest path when it's available. iOS has no equivalent (see below).
+- **Long-press the exact spot on the map in Google/Apple Maps to drop a pin** (not a
+  search result), copy the coordinates shown in the search bar, paste them here. This is
+  the most reliable method, full stop — see "Known limitations" below for why.
+- **Paste an already-expanded Google/Apple Maps link** — pulls the exact coordinates out
+  of it directly. Only works for a full link, not a shortened `maps.app.goo.gl` one (see
+  below for why there's no workaround for those).
+- **Android only, using Chrome or Samsung Internet: tap Share on a place in Google Maps
+  and pick "Camera Route"** — the smoothest path when it's available, but see the two
+  limitations below before relying on it.
 
 ## Known limitations, and why
 
