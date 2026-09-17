@@ -8,6 +8,12 @@
 <meta name="theme-color" content="#1a1a2e" />
 <link rel="icon" href="./icon-192.png" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
+<!-- iOS ignores manifest.json's display:standalone -- without these,
+     "Add to Home Screen" still opens inside Safari's normal browser chrome
+     (address bar, tabs) instead of full-screen like a real app. -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Camera Route" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   :root {
@@ -206,6 +212,6 @@
        makes this a genuinely different URL, so it can't be served stale by
        any cache layer (browser HTTP cache, CDN, a not-yet-updated service
        worker) regardless of what any of them think its freshness is. -->
-  <script src="./app.js?v=11"></script>
+  <script src="./app.js?v=12"></script>
 </body>
 </html>

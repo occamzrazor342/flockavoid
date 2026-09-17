@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.6';
+const BUILD_ID = '2026-09-17.7';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
