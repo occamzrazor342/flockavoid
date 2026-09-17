@@ -515,3 +515,24 @@ async function handleIncomingShare() {
 }
 
 handleIncomingShare();
+
+/**
+ * iOS Safari has never implemented the Web Share Target API (the piece
+ * that lets an installed PWA register as a destination in the system share
+ * sheet) -- confirmed current as of this build, not a config issue on this
+ * app's end. Sharing a place from Google/Apple Maps straight into this app
+ * only works on Android. Telling iPhone users this plainly up front beats
+ * letting them hunt for a Share option that will never appear.
+ */
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+}
+
+const platformNote = $('platformNote');
+if (platformNote) {
+  platformNote.textContent = isIOS()
+    ? 'On iPhone: Share-from-Maps auto-fill isn’t available (Apple hasn’t implemented that API in ' +
+      'Safari) — open this app directly and paste the address or Maps link into Destination below instead.'
+    : 'Tip: tap Share on a place in Google Maps and pick Camera Route to auto-fill the destination.';
+}
