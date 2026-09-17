@@ -9,6 +9,7 @@
 // this PWA is a mobile counterpart to.
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
+const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
@@ -352,27 +353,40 @@ async function shareToOsmAnd() {
   const name = `Camera-avoidance: ${origin.name} to ${destination.name}`;
   const description = `${improvement.camerasAvoided} cameras avoided vs. the normal route`;
   const gpxContent = generateGPX(avoidance, name, description);
-  const file = new File([gpxContent], `camera-route-${Date.now()}.gpx`, { type: 'application/gpx+xml' });
 
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: name, text: description });
+  // Chrome's Web Share API only allows a fixed allowlist of common file
+  // types (image/audio/video/PDF/plain text) -- confirmed .gpx is not on
+  // it, and there's no way to get around that from a website. The fix:
+  // host the GPX at a real HTTPS URL (via the bridge worker) and share
+  // that URL instead of a file -- sharing a URL has no such restriction,
+  // and OsmAnd's own file-open intent filter matches a link ending in
+  // .gpx the same way it matches a local file.
+  try {
+    setStatus('Uploading route…');
+    const uploadResp = await fetch(`${BRIDGE_WORKER_URL}/gpx`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/gpx+xml' },
+      body: gpxContent,
+    });
+    if (!uploadResp.ok) throw new Error(`Upload failed (${uploadResp.status})`);
+    const { url: gpxUrl } = await uploadResp.json();
+
+    if (navigator.canShare && navigator.canShare({ url: gpxUrl })) {
+      await navigator.share({ url: gpxUrl, title: name, text: description });
       setStatus('Shared. Pick OsmAnd, then tap Navigation → Start.');
-    } catch (err) {
-      if (err.name !== 'AbortError') setStatus(`Share failed: ${err.message}`, true);
+    } else if (navigator.share) {
+      // Some browsers support share() for URLs without canShare() pre-check.
+      await navigator.share({ url: gpxUrl, title: name, text: description });
+      setStatus('Shared. Pick OsmAnd, then tap Navigation → Start.');
+    } else {
+      // No Web Share support at all -- last resort, open the link directly
+      // so the user can long-press / use the browser's own "Open with".
+      window.open(gpxUrl, '_blank');
+      setStatus('Web Share isn’t available here — opened the route link directly instead.', true);
     }
-  } else {
-    // Fallback for browsers without file-sharing support: download the GPX
-    // so it can be opened manually (Files app -> Share -> OsmAnd).
-    const url = URL.createObjectURL(new Blob([gpxContent], { type: 'application/gpx+xml' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setStatus('Your browser can’t share files directly — GPX downloaded instead. Open it from Files and share to OsmAnd manually.', true);
+  } catch (err) {
+    if (err.name === 'AbortError') return; // user cancelled the share sheet
+    setStatus(`Could not share the route: ${err.message}`, true);
   }
 }
 
