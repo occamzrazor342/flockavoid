@@ -123,7 +123,13 @@ export default {
           // original bug here -- confirmed live it let OsmAnd's own share
           // handler receive a bare URL as shared text and search it as a
           // place name instead of importing it.
-          'Content-Disposition': 'attachment; filename="route.gpx"',
+          //
+          // filename includes the route's own id, not a static "route.gpx" --
+          // confirmed live that a fixed filename makes Chrome treat every
+          // subsequent route as "you already downloaded this file, download
+          // again?", an extra confirmation tap on every single route. A
+          // unique name per route means Chrome just downloads it, every time.
+          'Content-Disposition': `attachment; filename="route-${gpxMatch[1].slice(0, 8)}.gpx"`,
         },
       });
     }

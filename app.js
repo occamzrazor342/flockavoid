@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.1';
+const BUILD_ID = '2026-09-17.2';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -555,9 +555,16 @@ async function downloadForOsmAnd() {
     setStatus('Uploading route…');
     const gpxUrl = await uploadGPX(gpxContent);
 
+    // A fixed filename here (as this used to be) makes Chrome treat every
+    // route as "you already downloaded this file, download again?" --
+    // confirmed live, an extra confirmation tap every single time. The
+    // server names the actual downloaded file uniquely per route (see the
+    // worker's Content-Disposition header); this download attribute is
+    // mostly ignored for a cross-origin URL like this one anyway, but kept
+    // unique too rather than left stale and misleading.
     const link = document.createElement('a');
     link.href = gpxUrl;
-    link.download = 'route.gpx';
+    link.download = `route-${Date.now()}.gpx`;
     document.body.appendChild(link);
     link.click();
     link.remove();
