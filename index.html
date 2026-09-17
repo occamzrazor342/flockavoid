@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#1a1a2e" />
 <link rel="icon" href="./icon-192.png" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   :root {
     --bg: #1a1a2e;
@@ -130,6 +131,21 @@
   }
   .clear-btn:hover, .clear-btn:active { color: var(--text); }
   #buildId { text-align: center; opacity: 0.4; margin-top: 24px; }
+  #routeMap {
+    height: 260px;
+    border-radius: 8px;
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    background: #14141f;
+  }
+  .camera-marker {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid #0a0a12;
+  }
+  .camera-marker.avoided { background: var(--accent); }
+  .camera-marker.remaining { background: var(--danger); }
 </style>
 </head>
 <body>
@@ -172,6 +188,9 @@
     <div class="stat-row"><span>Extra distance</span><span id="statDistance"></span></div>
     <div class="stat-row"><span>Extra time</span><span id="statTime"></span></div>
 
+    <div id="routeMap"></div>
+    <p class="note" id="mapLegend"></p>
+
     <button class="primary" id="navigateOsmAndBtn" style="margin-top: 14px;">🧭 Navigate in OsmAnd</button>
     <p class="note">No download — opens straight into turn-by-turn. May approximate on a long detour.</p>
     <button class="secondary" id="downloadOsmAndBtn">⬇️ Or download the exact route</button>
@@ -181,11 +200,12 @@
 
   <p class="note" id="buildId"></p>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- ?v= is bumped on every deploy that touches app.js -- belt-and-suspenders
        on top of the service worker's cache: 'no-store' fix: a version bump
        makes this a genuinely different URL, so it can't be served stale by
        any cache layer (browser HTTP cache, CDN, a not-yet-updated service
        worker) regardless of what any of them think its freshness is. -->
-  <script src="./app.js?v=10"></script>
+  <script src="./app.js?v=11"></script>
 </body>
 </html>

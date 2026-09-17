@@ -15,7 +15,7 @@
 // be told apart from "still running old code" without a visible marker to
 // check. If a reported bug's build ID doesn't match the latest deploy, it's
 // caching, not logic -- if it matches, it's a real bug to find in this code.
-const BUILD_ID = '2026-09-17.5';
+const BUILD_ID = '2026-09-17.6';
 
 const API_URL = 'https://api.dontgetflocked.com/api/v1/route';
 const BRIDGE_WORKER_URL = 'https://flockavoid-bridge.cloudflare-harmony254.workers.dev';
@@ -27,7 +27,6 @@ const PHOTON_URL = 'https://photon.komoot.io/api/';
 // as a fallback below, not primary -- confirmed directly that they frequently
 // lack a specific business in a shared building even when Google has it.
 const GOOGLE_PLACES_API_KEY = 'AIzaSyAA_CuzgXXdnr0ArJaVhzlbK02ctX5BOvM';
-const GOOGLE_AUTOCOMPLETE_URL = 'https://places.googleapis.com/v1/places:autocomplete';
 const GOOGLE_TEXTSEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
 const AUTOCOMPLETE_DEBOUNCE_MS = 400;
@@ -81,55 +80,16 @@ async function useCurrentLocation(statusOnSuccess = 'Location set. Enter a desti
   });
 }
 
-/** Autocomplete predictions only -- no coordinates yet (Google's Autocomplete
- * endpoint doesn't return them, by design, to keep the common per-keystroke
- * call cheap). Coordinates are fetched via getGooglePlaceDetails only for
- * the one suggestion actually selected, not every suggestion shown.
- *
- * Biased toward `currentOrigin` (a soft preference, not a hard restriction --
- * a real match far away still shows up, just ranked lower) -- confirmed this
- * was missing entirely and produced wrong results: "O'Reilly Auto" with no
- * bias returned Florida matches ahead of the correct Austin one, purely
- * because Google's Autocomplete has no location context by default and
- * falls back to generic relevance/popularity ranking, not proximity. */
-async function searchGoogleAutocomplete(query) {
-  const body = { input: query };
-  if (currentOrigin) {
-    body.locationBias = {
-      circle: { center: { latitude: currentOrigin.lat, longitude: currentOrigin.lon }, radius: 50000.0 },
-    };
-  }
-  const resp = await fetch(GOOGLE_AUTOCOMPLETE_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) return [];
-  const data = await resp.json();
-  return (data.suggestions || [])
-    .map((s) => s.placePrediction)
-    .filter(Boolean)
-    .map((p) => ({ name: p.text.text, placeId: p.placeId, needsDetails: true, lat: null, lon: null }));
-}
-
-async function getGooglePlaceDetails(placeId) {
-  const resp = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
-    headers: {
-      'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
-      'X-Goog-FieldMask': 'location,displayName,formattedAddress',
-    },
-  });
-  if (!resp.ok) throw new Error(`Place details failed (${resp.status})`);
-  const data = await resp.json();
-  return {
-    lat: data.location.latitude,
-    lon: data.location.longitude,
-    name: data.formattedAddress || data.displayName?.text || placeId,
-  };
-}
+/** Superseded searchGoogleAutocomplete()/getGooglePlaceDetails() -- confirmed
+ * live this was a real correctness bug, not just a cost tradeoff: even with
+ * a tight locationRestriction (15km), Autocomplete's own prediction ranking
+ * still missed the actual 3 closest real matches entirely (best it
+ * surfaced was 6.42km away; the true nearest was 3.82km, found instantly
+ * by Text Search). Autocomplete's per-keystroke cheapness isn't worth
+ * regularly steering a user to the wrong branch of a chain business.
+ * searchGoogleTextSearch already returns real coordinates directly (no
+ * separate per-pick Details fetch needed) and is already distance-sorted
+ * (see its own comment) -- reusing it here for the live dropdown too. */
 
 function haversineKm(a, b) {
   const R = 6371;
@@ -142,12 +102,12 @@ function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-/** One-shot geocode for the "typed/pasted and hit Get Route directly" path
- * (and the Share-to-app auto-flow, which never shows the user a dropdown to
- * pick from) -- Text Search rather than Autocomplete, since it returns a
- * location inline for a complete query with no separate details call
- * needed. Same currentOrigin bias as searchGoogleAutocomplete, for the
- * same reason -- but bias alone isn't enough, confirmed live: a real query
+/** One-shot geocode for the "typed/pasted and hit Get Route directly" path,
+ * the Share-to-app auto-flow (neither shows the user a dropdown to pick
+ * from), and now also the live suggestion dropdown itself (see
+ * searchSuggestions) -- Text Search returns a location inline with no
+ * separate details call needed, unlike the dedicated Autocomplete endpoint.
+ * Biased toward currentOrigin, but bias alone isn't enough, confirmed live: a real query
  * for "O'Reilly Auto Parts" with locationBias set returned the correct
  * 3.82km-away store *behind* a 4.22km-away one, because Google's Text
  * Search ranks by a blend of distance and its own relevance/prominence
@@ -214,24 +174,27 @@ async function searchPhoton(query, limit = 5) {
 }
 
 /** Live suggestions for the autocomplete dropdown. Google Places first --
- * confirmed directly (see git history/commit messages around this) that it
- * finds specific businesses in shared buildings/strip malls that Nominatim
- * and Photon both miss, since Google's database is licensed/verified
- * business data, not volunteer OSM tagging. Nominatim + Photon results are
+ * confirmed directly that it finds specific businesses in shared
+ * buildings/strip malls that Nominatim and Photon both miss, since
+ * Google's database is licensed/verified business data, not volunteer OSM
+ * tagging. Uses Text Search, not the dedicated Autocomplete endpoint --
+ * confirmed live that Autocomplete's own ranking missed the true closest
+ * branch of a chain business even with a tight location restriction, while
+ * Text Search (already distance-sorted, see its own comment) found it
+ * immediately, so results here already carry real coordinates with no
+ * separate per-pick Details fetch needed. Nominatim + Photon results are
  * still merged in after, since they occasionally have something Google's
- * result set doesn't surface first, and cost nothing extra to include.
- * Google suggestions carry a placeId instead of coordinates (see
- * searchGoogleAutocomplete) -- resolved lazily on selection, not here. */
+ * result set doesn't surface first, and cost nothing extra to include. */
 async function searchSuggestions(query) {
   const [googleResults, nominatimResults, photonResults] = await Promise.all([
-    searchGoogleAutocomplete(query).catch(() => []),
+    searchGoogleTextSearch(query).catch(() => []),
     searchNominatim(query).catch(() => []),
     searchPhoton(query).catch(() => []),
   ]);
   const seen = new Set();
   const combined = [];
   for (const r of [...googleResults, ...nominatimResults, ...photonResults]) {
-    const key = r.placeId || `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
+    const key = `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     combined.push(r);
@@ -464,6 +427,63 @@ function osmandNavigateUrl(origin, destination, geometry) {
   return `https://osmand.net/map/navigate?${params.toString()}`;
 }
 
+let routeMapInstance = null;
+let routeMapLayerGroup = null;
+
+/** Directly answers "I'd like to visually see the cameras we're avoiding,"
+ * rather than just a text count -- Leaflet + free CARTO dark tiles, no API
+ * key needed. Reuses one map instance across multiple Get Route calls
+ * (clearing/redrawing its layer group each time) since Leaflet throws if
+ * you re-init over an already-initialized container. Must be called only
+ * after #results is unhidden -- Leaflet needs its container to actually
+ * have a size when it first initializes, not display:none. */
+function renderRouteMap(origin, destination, geometry, avoidedCameras, remainingCameras) {
+  if (!window.L) return; // Leaflet failed to load (e.g. offline) -- map is a bonus, not required
+
+  if (!routeMapInstance) {
+    routeMapInstance = L.map('routeMap');
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      maxZoom: 19,
+    }).addTo(routeMapInstance);
+  } else {
+    routeMapInstance.invalidateSize();
+  }
+
+  if (routeMapLayerGroup) routeMapLayerGroup.remove();
+  routeMapLayerGroup = L.layerGroup().addTo(routeMapInstance);
+
+  const line = geometry.map(([lat, lon]) => [lat, lon]);
+  L.polyline(line, { color: '#4ade80', weight: 4 }).addTo(routeMapLayerGroup);
+
+  L.circleMarker([origin.lat, origin.lon], {
+    radius: 7, color: '#0a0a12', weight: 2, fillColor: '#4ade80', fillOpacity: 1,
+  }).bindPopup('Start').addTo(routeMapLayerGroup);
+  L.circleMarker([destination.lat, destination.lon], {
+    radius: 7, color: '#0a0a12', weight: 2, fillColor: '#e8e8f0', fillOpacity: 1,
+  }).bindPopup('Destination').addTo(routeMapLayerGroup);
+
+  for (const c of avoidedCameras) {
+    L.circleMarker([c.camera.lat, c.camera.lon], {
+      radius: 6, color: '#0a0a12', weight: 2, fillColor: '#4ade80', fillOpacity: 0.9,
+    }).bindPopup(`Avoided${c.camera.brand ? ` — ${c.camera.brand}` : ''}`).addTo(routeMapLayerGroup);
+  }
+  for (const c of remainingCameras) {
+    L.circleMarker([c.camera.lat, c.camera.lon], {
+      radius: 6, color: '#0a0a12', weight: 2, fillColor: '#f87171', fillOpacity: 0.9,
+    }).bindPopup(`Still on route${c.camera.brand ? ` — ${c.camera.brand}` : ''}`).addTo(routeMapLayerGroup);
+  }
+
+  routeMapInstance.fitBounds(L.latLngBounds(line), { padding: [24, 24] });
+
+  const legend = $('mapLegend');
+  if (legend) {
+    legend.innerHTML = avoidedCameras.length || remainingCameras.length
+      ? `<span style="color:#4ade80">●</span> Avoided (${avoidedCameras.length}) &nbsp; <span style="color:#f87171">●</span> Still on route (${remainingCameras.length})`
+      : 'No cameras found near this route.';
+  }
+}
+
 async function getRoute() {
   const destInput = $('destination').value.trim();
   const originInput = $('origin').value.trim();
@@ -548,6 +568,17 @@ async function getRoute() {
     $('gmapsLink').href = googleMapsUrl(currentOrigin, destination, avoidance.geometry);
 
     $('results').hidden = false;
+
+    // Cameras present on the normal route but not on the chosen avoidance
+    // route are the ones actually being avoided -- FlockHopper returns both
+    // routes' camerasOnRoute lists directly, real coordinates included, so
+    // no separate lookup is needed to show this. Rendered only after
+    // unhiding #results above -- Leaflet needs its container to actually
+    // have a size when it initializes, not display:none.
+    const remainingIds = new Set(result.avoidanceRoute.camerasOnRoute.map((c) => c.camera.osmId));
+    const avoidedCameras = result.normalRoute.camerasOnRoute.filter((c) => !remainingIds.has(c.camera.osmId));
+    renderRouteMap(currentOrigin, destination, avoidance.geometry, avoidedCameras, result.avoidanceRoute.camerasOnRoute);
+
     setStatus('Route ready. Share to OsmAnd for exact turn-by-turn, or open the approximate Google Maps link.');
   } catch (err) {
     setStatus(err.message || String(err), true);
@@ -650,29 +681,16 @@ function wireLocationInput({ input, suggestionsBox, clearBtn, onResolved, onClea
       item.type = 'button';
       item.className = 'suggestion-item';
       item.textContent = s.name;
-      item.addEventListener('click', async () => {
+      item.addEventListener('click', () => {
         suggestionsBox.hidden = true;
         suggestionsBox.innerHTML = '';
         input.value = s.name;
         updateClearBtn();
-
-        if (s.needsDetails) {
-          // Google Autocomplete suggestions carry a placeId, not coordinates
-          // yet (see searchGoogleAutocomplete) -- resolve them only now, for
-          // the one place actually picked, not every suggestion shown.
-          setStatus('Getting exact location…');
-          try {
-            const details = await getGooglePlaceDetails(s.placeId);
-            onResolved({ ...details, name: s.name });
-            setStatus(resolvedStatus(s.name));
-          } catch (err) {
-            setStatus(`Could not get exact location: ${err.message}`, true);
-            onCleared();
-          }
-        } else {
-          onResolved(s);
-          setStatus(resolvedStatus(s.name));
-        }
+        // Every suggestion source now returns real coordinates directly
+        // (see searchSuggestions) -- no separate per-pick Details fetch
+        // needed any more.
+        onResolved(s);
+        setStatus(resolvedStatus(s.name));
       });
       suggestionsBox.appendChild(item);
     }
