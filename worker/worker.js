@@ -27,6 +27,26 @@
  *    GET /gpx/<id> serves the stored content back with the right
  *    Content-Type. Entries expire after 1 hour (KV expirationTtl) --
  *    this is a short-lived handoff, not permanent storage.
+ *
+ * 3. POST /places/searchtext  (body: {"textQuery": ..., "locationBias": ...})
+ *    Proxies Google Places Text Search using a server-only API key
+ *    (env.GOOGLE_PLACES_SERVER_KEY, a Worker secret -- never in client code
+ *    or git). Exists to replace a client-side Google key restricted only
+ *    by HTTP referrer, which has two real problems: a referrer is just a
+ *    string a real browser honestly sends, so (1) any non-browser script
+ *    holding the key can simply lie about it and use the key anyway
+ *    (confirmed directly -- curl can set an arbitrary Referer header), and
+ *    (2) some real mobile browser contexts (iOS Safari's installed
+ *    "standalone" home-screen mode, suspected here) are known to drop the
+ *    Referer header entirely, breaking the restriction from the *correct*
+ *    origin too. A server-only key never shipped to any client sidesteps
+ *    both: there's no key for anyone to extract and spoof a referrer with,
+ *    and Google never needs to see one at all. The same-origin check below
+ *    is a second, independent, non-airtight layer (a scripted caller can
+ *    fake an Origin/Referer header hitting this endpoint the same way it
+ *    could fake one straight to Google) -- it raises the bar against
+ *    casual reuse of this endpoint from another site, not a cryptographic
+ *    guarantee.
  */
 
 const GPX_TTL_SECONDS = 3600;
@@ -92,6 +112,38 @@ export default {
       } catch (err) {
         return json({ error: `Could not resolve: ${err.message}` }, 502);
       }
+    }
+
+    if (url.pathname === '/places/searchtext' && request.method === 'POST') {
+      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+        return json({ error: 'Forbidden' }, 403);
+      }
+      if (!env.GOOGLE_PLACES_SERVER_KEY) {
+        // Expected until the new server-only key is created and set as a
+        // Worker secret -- not a bug, this endpoint is deployed ahead of
+        // that on purpose since it's inert (nothing calls it yet) until
+        // then.
+        return json({ error: 'Places proxy not configured yet' }, 503);
+      }
+      const clientBody = await request.text();
+      const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': env.GOOGLE_PLACES_SERVER_KEY,
+          // Fixed server-side, not forwarded from the client -- keeps this
+          // proxy from being usable to request arbitrary, possibly pricier
+          // field masks than this app actually needs.
+          'X-Goog-FieldMask': 'places.location,places.displayName,places.formattedAddress',
+        },
+        body: clientBody,
+      });
+      const data = await resp.text();
+      return new Response(data, {
+        status: resp.status,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      });
     }
 
     if (url.pathname === '/gpx' && request.method === 'POST') {
