@@ -50,6 +50,20 @@
  */
 
 const GPX_TTL_SECONDS = 3600;
+// One route's worth of cameras, with plenty of headroom; a cap this endpoint
+// enforces rather than trusting the caller to be reasonable.
+const OSM_MAX_IDS = 100;
+const OSM_CACHE_SECONDS = 86400;
+// Roughly a metro area. Large enough for a useful map view, small enough that
+// one request can't pull a region-sized dataset.
+const AREA_MAX_SPAN_DEG = 0.6;
+const AREA_GRID_DEG = 0.05;
+// DeFlock's own instance first: measured 1.2s against the public instance's
+// 69.8s for an identical query with identical results.
+const OVERPASS_HOSTS = [
+  'https://overpass.deflock.org/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+];
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -144,6 +158,202 @@ export default {
         status: resp.status,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
+    }
+
+    if (url.pathname === '/osm/cameras' && request.method === 'POST') {
+      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+        return json({ error: 'Forbidden' }, 403);
+      }
+
+      let body;
+      try {
+        body = await request.json();
+      } catch (err) {
+        return json({ error: 'Body must be JSON' }, 400);
+      }
+
+      // Deliberately takes a list of ids and builds the Overpass query here,
+      // and never accepts a query string from the client. Forwarding a
+      // caller-supplied query would turn this endpoint into an open relay for
+      // arbitrary Overpass work -- expensive area-wide queries billed to
+      // OSM's volunteer-run servers, attributed to this Worker's IP, and a
+      // ready-made SSRF primitive. Numeric ids can't express any of that.
+      const rawIds = Array.isArray(body?.osmIds) ? body.osmIds : null;
+      if (!rawIds || rawIds.length === 0) {
+        return json({ error: 'osmIds must be a non-empty array' }, 400);
+      }
+      if (rawIds.length > OSM_MAX_IDS) {
+        return json({ error: `At most ${OSM_MAX_IDS} ids per request` }, 400);
+      }
+      const ids = [];
+      for (const value of rawIds) {
+        // Number, integral, positive, and inside OSM's real id range. Anything
+        // else is rejected outright rather than coerced.
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+          return json({ error: 'osmIds must be positive integers' }, 400);
+        }
+        ids.push(value);
+      }
+      // Sorted + de-duplicated so the same set of cameras always produces the
+      // same cache key regardless of the order they arrived in.
+      const uniqueSorted = [...new Set(ids)].sort((a, b) => a - b);
+
+      // Camera tags change on the order of months, and Overpass is a
+      // volunteer-run service that asks callers not to hammer it. Caching a
+      // day is both faster for the app and the polite thing to do.
+      const cacheKey = new Request(
+        `${url.origin}/osm/cameras/cache/${uniqueSorted.join(',')}`,
+        { method: 'GET' },
+      );
+      const cache = caches.default;
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
+
+      const query = `[out:json][timeout:25];node(id:${uniqueSorted.join(',')});out tags;`;
+      let upstream;
+      try {
+        upstream = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            // Overpass asks for an identifying User-Agent so operators can
+            // contact heavy users rather than just blocking them.
+            'User-Agent': 'flockavoid-bridge (https://github.com/occamzrazor342/flockavoid)',
+          },
+          body: `data=${encodeURIComponent(query)}`,
+        });
+      } catch (err) {
+        return json({ error: `Overpass unreachable: ${err.message}` }, 502);
+      }
+      if (!upstream.ok) {
+        return json({ error: `Overpass returned ${upstream.status}` }, 502);
+      }
+
+      let overpass;
+      try {
+        overpass = await upstream.json();
+      } catch (err) {
+        return json({ error: 'Overpass returned unparseable JSON' }, 502);
+      }
+
+      // Returns only the tags the app actually renders, keyed by id. Passing
+      // the raw Overpass payload straight through would ship a pile of fields
+      // nothing reads and make the client parse a third party's schema.
+      const cameras = {};
+      for (const element of overpass.elements || []) {
+        const tags = element.tags || {};
+        cameras[String(element.id)] = {
+          surveillanceType: tags['surveillance:type'] || null,
+          cameraType: tags['camera:type'] || null,
+          mount: tags['camera:mount'] || null,
+          manufacturer: tags.manufacturer || null,
+          operator: tags.operator || null,
+          zone: tags['surveillance:zone'] || null,
+          direction: tags.direction || tags['camera:direction'] || null,
+          description: tags.description || null,
+        };
+      }
+
+      const response = json({ cameras });
+      response.headers.set('Cache-Control', `public, max-age=${OSM_CACHE_SECONDS}`);
+      // waitUntil isn't available here, and the write is cheap enough to await.
+      await cache.put(cacheKey, response.clone());
+      return response;
+    }
+
+    if (url.pathname === '/osm/cameras/area' && request.method === 'POST') {
+      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+        return json({ error: 'Forbidden' }, 403);
+      }
+
+      let body;
+      try {
+        body = await request.json();
+      } catch (err) {
+        return json({ error: 'Body must be JSON' }, 400);
+      }
+
+      const nums = ['south', 'west', 'north', 'east'].map((k) => body?.[k]);
+      if (nums.some((v) => typeof v !== 'number' || !Number.isFinite(v))) {
+        return json({ error: 'south/west/north/east must be numbers' }, 400);
+      }
+      let [south, west, north, east] = nums;
+      if (south < -90 || north > 90 || west < -180 || east > 180 || south >= north || west >= east) {
+        return json({ error: 'Invalid bounding box' }, 400);
+      }
+      // Bounded on purpose. An unbounded area query against a volunteer-run
+      // Overpass instance is both a denial-of-service risk to them and a way
+      // to pull a national dataset through this Worker one request at a time.
+      if (north - south > AREA_MAX_SPAN_DEG || east - west > AREA_MAX_SPAN_DEG) {
+        return json({ error: `Area too large (max ${AREA_MAX_SPAN_DEG} degrees per side)` }, 400);
+      }
+
+      // Snapped outward to a fixed grid so that panning the map slightly
+      // produces the same cache key instead of a near-miss every time. The
+      // caller gets a little more than it asked for, which is fine.
+      const snap = (v, dir) =>
+        (dir < 0 ? Math.floor(v / AREA_GRID_DEG) : Math.ceil(v / AREA_GRID_DEG)) * AREA_GRID_DEG;
+      south = Number(snap(south, -1).toFixed(3));
+      west = Number(snap(west, -1).toFixed(3));
+      north = Number(snap(north, 1).toFixed(3));
+      east = Number(snap(east, 1).toFixed(3));
+
+      const cacheKey = new Request(
+        `${url.origin}/osm/cameras/area/cache/${south},${west},${north},${east}`,
+        { method: 'GET' },
+      );
+      const cache = caches.default;
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
+
+      const query =
+        `[out:json][timeout:25];node["man_made"="surveillance"](${south},${west},${north},${east});out body;`;
+
+      // DeFlock runs its own Overpass instance for exactly this data, and it is
+      // dramatically faster than the public one -- measured on an identical
+      // query returning identical results: 1.2s versus 69.8s. The public
+      // instance stays as a fallback rather than a default.
+      let overpass = null;
+      for (const host of OVERPASS_HOSTS) {
+        try {
+          const resp = await fetch(host, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'User-Agent': 'flockavoid-bridge (https://github.com/occamzrazor342/flockavoid)',
+            },
+            body: `data=${encodeURIComponent(query)}`,
+          });
+          if (!resp.ok) continue;
+          overpass = await resp.json();
+          break;
+        } catch (err) {
+          // Try the next host.
+        }
+      }
+      if (!overpass) return json({ error: 'No Overpass instance reachable' }, 502);
+
+      // Trimmed hard: a heatmap needs position and weighting, nothing else.
+      // The full tag payload for a city is hundreds of KB of data the client
+      // would immediately discard.
+      const cameras = [];
+      for (const el of overpass.elements || []) {
+        if (typeof el.lat !== 'number' || typeof el.lon !== 'number') continue;
+        const tags = el.tags || {};
+        cameras.push({
+          id: el.id,
+          lat: Number(el.lat.toFixed(6)),
+          lon: Number(el.lon.toFixed(6)),
+          alpr: (tags['surveillance:type'] || '').toUpperCase() === 'ALPR',
+        });
+      }
+
+      const response = json({ cameras, bbox: { south, west, north, east } });
+      response.headers.set('Cache-Control', `public, max-age=${OSM_CACHE_SECONDS}`);
+      await cache.put(cacheKey, response.clone());
+      return response;
     }
 
     if (url.pathname === '/gpx' && request.method === 'POST') {
