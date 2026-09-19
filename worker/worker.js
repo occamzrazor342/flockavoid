@@ -69,6 +69,11 @@ const GPX_TTL_SECONDS = 3600;
 // enforces rather than trusting the caller to be reasonable.
 const OSM_MAX_IDS = 100;
 const OSM_CACHE_SECONDS = 86400;
+// Per IP, per endpoint, per minute. Comfortably above what the app does during
+// normal use -- one route computation plus a heatmap pan is a handful of calls
+// -- and far below what it would take to run up a Google Places bill or make a
+// nuisance of this Worker on someone else's Overpass instance.
+const RATE_LIMIT_PER_MINUTE = 30;
 // Roughly a metro area. Large enough for a useful map view, small enough that
 // one request can't pull a region-sized dataset.
 const AREA_MAX_SPAN_DEG = 0.6;
@@ -111,6 +116,70 @@ async function queryOverpass(query) {
     }
   }
   return null;
+}
+
+/**
+ * Authorises a request.
+ *
+ * The original check compared Origin/Referer against the PWA's GitHub Pages
+ * URL. That was never strong -- the header is a string any caller can set --
+ * and it got weaker over time: the native app is not a browser and satisfies
+ * it by *claiming* to be the PWA, and this repository is public, so the exact
+ * string needed to pass is published alongside the code. Demonstrated with a
+ * single curl carrying a faked Referer, which sailed straight through.
+ *
+ * A shared token is not a cryptographic guarantee either -- anything shipped
+ * inside a distributed app can be extracted from it. What it does buy is a
+ * real difference: the secret is not published, it can be rotated without
+ * redeploying the app's origin story, and it can be revoked. Paired with the
+ * rate limiting below, that bounds the damage an extracted token can do to
+ * the Google Places bill and to a volunteer-run Overpass instance.
+ *
+ * Deliberately falls back to the old Referer check while APP_API_TOKEN is
+ * unset, so this can be deployed before the secret exists and before an app
+ * build carries it -- the same staged approach used for
+ * GOOGLE_PLACES_SERVER_KEY. Once the secret is set, the Referer path is gone.
+ */
+function isAuthorised(request, env) {
+  if (env.APP_API_TOKEN) {
+    const auth = request.headers.get('Authorization') || '';
+    const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    return timingSafeEqual(presented, env.APP_API_TOKEN);
+  }
+  const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
+  return origin.startsWith('https://occamzrazor342.github.io');
+}
+
+/** Constant-time compare, so a wrong token can't be narrowed down by timing. */
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Per-IP request cap, backed by the KV namespace already bound here.
+ *
+ * This is the part that actually limits harm. Auth answers "who is calling";
+ * this answers "how much can any one caller cost me" -- which matters because
+ * /places/searchtext spends real money against a Google key and the camera
+ * endpoints proxy a volunteer-run service under this Worker's identity.
+ *
+ * KV is eventually consistent, so the count can undershoot briefly under a
+ * burst from several edge locations. That is acceptable: the goal is bounding
+ * sustained abuse, not exact accounting, and a stricter primitive (Durable
+ * Objects) is not worth the complexity here.
+ */
+async function withinRateLimit(request, env, bucket, limit, windowSeconds) {
+  if (!env.GPX_STORE) return true;
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const window = Math.floor(Date.now() / 1000 / windowSeconds);
+  const key = `rl:${bucket}:${ip}:${window}`;
+  const current = parseInt((await env.GPX_STORE.get(key)) || '0', 10);
+  if (current >= limit) return false;
+  await env.GPX_STORE.put(key, String(current + 1), { expirationTtl: windowSeconds * 2 });
+  return true;
 }
 
 function json(obj, status = 200) {
@@ -172,9 +241,11 @@ export default {
     }
 
     if (url.pathname === '/places/searchtext' && request.method === 'POST') {
-      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+      if (!isAuthorised(request, env)) {
         return json({ error: 'Forbidden' }, 403);
+      }
+      if (!(await withinRateLimit(request, env, url.pathname, RATE_LIMIT_PER_MINUTE, 60))) {
+        return json({ error: 'Rate limit exceeded' }, 429);
       }
       if (!env.GOOGLE_PLACES_SERVER_KEY) {
         // Expected until the new server-only key is created and set as a
@@ -204,9 +275,11 @@ export default {
     }
 
     if (url.pathname === '/osm/cameras' && request.method === 'POST') {
-      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+      if (!isAuthorised(request, env)) {
         return json({ error: 'Forbidden' }, 403);
+      }
+      if (!(await withinRateLimit(request, env, url.pathname, RATE_LIMIT_PER_MINUTE, 60))) {
+        return json({ error: 'Rate limit exceeded' }, 429);
       }
 
       let body;
@@ -298,9 +371,11 @@ export default {
     }
 
     if (url.pathname === '/osm/cameras/area' && request.method === 'POST') {
-      const origin = request.headers.get('Origin') || request.headers.get('Referer') || '';
-      if (!origin.startsWith('https://occamzrazor342.github.io')) {
+      if (!isAuthorised(request, env)) {
         return json({ error: 'Forbidden' }, 403);
+      }
+      if (!(await withinRateLimit(request, env, url.pathname, RATE_LIMIT_PER_MINUTE, 60))) {
+        return json({ error: 'Rate limit exceeded' }, 429);
       }
 
       let body;
