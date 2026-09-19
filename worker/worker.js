@@ -1,7 +1,22 @@
 /**
  * flockavoid-bridge worker
  *
- * Two jobs, both existing because of real, confirmed limitations that
+ * Serves two clients now, and the newer one is the one that matters.
+ *
+ * The native Android app (Projects/flockavoid-native) depends on
+ * /places/searchtext, /osm/cameras and /osm/cameras/area. The original
+ * CamRoute PWA, which this was built for, is superseded by that app and only
+ * still uses /resolve and /gpx. Those two are kept because removing them would
+ * break the PWA outright, not because anything actively needs them.
+ *
+ * Worth knowing: the native app authenticates here by sending the PWA's
+ * origin as a Referer, so the same-origin check below is satisfied by a
+ * client that is not a browser at all. That is a fiction inherited from the
+ * PWA-first design and the weakest part of this Worker's access control --
+ * see the note on /places/searchtext about why it was never a strong check
+ * to begin with.
+ *
+ * Endpoints 1 and 2 exist because of real, confirmed limitations that
  * browser-side JS in the PWA can't work around on its own:
  *
  * 1. GET /resolve?url=<shortlink>
@@ -69,6 +84,34 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+/**
+ * Runs an Overpass query against the first host that answers.
+ *
+ * Shared by both camera endpoints deliberately: they previously had separate
+ * fetch logic and drifted, leaving one with a fallback and one without.
+ */
+async function queryOverpass(query) {
+  for (const host of OVERPASS_HOSTS) {
+    try {
+      const resp = await fetch(host, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          // Overpass asks for an identifying User-Agent so operators can
+          // contact heavy users rather than just blocking them.
+          'User-Agent': 'flockavoid-bridge (https://github.com/occamzrazor342/flockavoid)',
+        },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+      if (!resp.ok) continue;
+      return await resp.json();
+    } catch (err) {
+      // Try the next host.
+    }
+  }
+  return null;
+}
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -210,31 +253,22 @@ export default {
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
-      const query = `[out:json][timeout:25];node(id:${uniqueSorted.join(',')});out tags;`;
-      let upstream;
-      try {
-        upstream = await fetch('https://overpass-api.de/api/interpreter', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            // Overpass asks for an identifying User-Agent so operators can
-            // contact heavy users rather than just blocking them.
-            'User-Agent': 'flockavoid-bridge (https://github.com/occamzrazor342/flockavoid)',
-          },
-          body: `data=${encodeURIComponent(query)}`,
-        });
-      } catch (err) {
-        return json({ error: `Overpass unreachable: ${err.message}` }, 502);
-      }
-      if (!upstream.ok) {
-        return json({ error: `Overpass returned ${upstream.status}` }, 502);
-      }
-
-      let overpass;
-      try {
-        overpass = await upstream.json();
-      } catch (err) {
-        return json({ error: 'Overpass returned unparseable JSON' }, 502);
+      // `out meta` rather than `out tags` so the response carries each node's
+      // last-edited timestamp. This data is crowdsourced, and how recently a
+      // camera was confirmed is part of how much to trust it -- a node touched
+      // last week is a different proposition from one untouched for two years.
+      const query = `[out:json][timeout:25];node(id:${uniqueSorted.join(',')});out meta;`;
+      // Tries every host in turn, same as the area endpoint. This originally
+      // hardcoded the public instance with no fallback, and that broke the
+      // feature outright the first time the public instance went down while
+      // DeFlock's own was healthy -- caught live, returning
+      // "Overpass returned 521" while the heatmap beside it kept working
+      // because only that endpoint had the fallback. Host order matters too:
+      // DeFlock's instance measured 1.2s against the public one's 69.8s on an
+      // identical query.
+      const overpass = await queryOverpass(query);
+      if (!overpass) {
+        return json({ error: 'No Overpass instance reachable' }, 502);
       }
 
       // Returns only the tags the app actually renders, keyed by id. Passing
@@ -252,6 +286,7 @@ export default {
           zone: tags['surveillance:zone'] || null,
           direction: tags.direction || tags['camera:direction'] || null,
           description: tags.description || null,
+          lastUpdated: element.timestamp || null,
         };
       }
 
@@ -315,24 +350,7 @@ export default {
       // dramatically faster than the public one -- measured on an identical
       // query returning identical results: 1.2s versus 69.8s. The public
       // instance stays as a fallback rather than a default.
-      let overpass = null;
-      for (const host of OVERPASS_HOSTS) {
-        try {
-          const resp = await fetch(host, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'User-Agent': 'flockavoid-bridge (https://github.com/occamzrazor342/flockavoid)',
-            },
-            body: `data=${encodeURIComponent(query)}`,
-          });
-          if (!resp.ok) continue;
-          overpass = await resp.json();
-          break;
-        } catch (err) {
-          // Try the next host.
-        }
-      }
+      const overpass = await queryOverpass(query);
       if (!overpass) return json({ error: 'No Overpass instance reachable' }, 502);
 
       // Trimmed hard: a heatmap needs position and weighting, nothing else.
