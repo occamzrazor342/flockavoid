@@ -435,11 +435,24 @@ export default {
       for (const el of overpass.elements || []) {
         if (typeof el.lat !== 'number' || typeof el.lon !== 'number') continue;
         const tags = el.tags || {};
+        // `dir` and `pan` are what let the app draw each camera's field of
+        // view on the coverage map rather than an anonymous dot. Both are
+        // omitted when absent, which keeps the trimming above meaningful:
+        // most cameras carry neither tag, so the common case costs nothing.
+        //
+        // `pan` matters for correctness, not decoration. A panning camera's
+        // recorded direction is only where it happened to be resting when
+        // surveyed, so the app must not draw it the confident cone a fixed
+        // camera gets.
+        const direction = tags['direction'];
+        const panning = String(tags['camera:type'] || '').toLowerCase() === 'panning';
         cameras.push({
           id: el.id,
           lat: Number(el.lat.toFixed(6)),
           lon: Number(el.lon.toFixed(6)),
           alpr: (tags['surveillance:type'] || '').toUpperCase() === 'ALPR',
+          ...(direction ? { dir: String(direction) } : {}),
+          ...(panning ? { pan: true } : {}),
         });
       }
 
